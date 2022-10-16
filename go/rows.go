@@ -133,7 +133,7 @@ func (r *Rows) Next(dest []driver.Value) error {
 }
 
 func (r *Rows) openResults() error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(r.ctx)
 	resp, err := r.s3.GetObjectWithContext(
 		ctx,
 		&s3.GetObjectInput{
