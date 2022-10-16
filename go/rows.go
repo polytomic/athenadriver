@@ -56,11 +56,11 @@ type Rows struct {
 }
 
 // NewNonOpsRows is to create a new Rows.
-func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, downloader s3iface.S3API, queryID string, driverConfig *Config,
+func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, queryID string, driverConfig *Config,
 	obs *DriverTracer) (*Rows, error) {
 	r := Rows{
 		athena:    athenaAPI,
-		s3:        downloader,
+		s3:        s3,
 		ctx:       ctx,
 		queryID:   queryID,
 		config:    driverConfig,
@@ -71,23 +71,23 @@ func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, downloa
 }
 
 // NewRows is to create a new Rows.
-func NewRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, downloader s3iface.S3API, queryID string, driverConfig *Config,
+func NewRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, queryID string, driverConfig *Config,
 	obs *DriverTracer) (*Rows, error) {
 	r := Rows{
 		athena:    athenaAPI,
-		s3:        downloader,
+		s3:        s3,
 		ctx:       ctx,
 		queryID:   queryID,
 		config:    driverConfig,
 		tracer:    obs,
 		pageCount: -1,
 	}
-	// download the results and open the resulting CSV for reading
-	if err := r.openResults(); err != nil {
-		return nil, err
-	}
 	// fetch the first result so we have column metadata
 	if err := r.fetchNextPage(); err != nil {
+		return nil, err
+	}
+	// begin downloading the CSV results from S3
+	if err := r.openResults(); err != nil {
 		return nil, err
 	}
 	return &r, nil
