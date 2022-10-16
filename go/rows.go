@@ -26,8 +26,11 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -35,6 +38,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/athena/athenaiface"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
 	"go.uber.org/zap"
 )
 
@@ -42,6 +46,7 @@ import (
 type Rows struct {
 	athena          athenaiface.AthenaAPI
 	s3              s3iface.S3API
+	mgr             s3manageriface.DownloaderAPI
 	ctx             context.Context
 	queryID         string
 	reachedLastPage bool
@@ -50,17 +55,21 @@ type Rows struct {
 	tracer          *DriverTracer
 	pageCount       int64
 
+	rmu             sync.RWMutex
+	readCount       int64
 	resultsCanceler context.CancelFunc
+	resultsFilename string
 	resultsFile     io.ReadCloser
 	results         *csv.Reader
 }
 
 // NewNonOpsRows is to create a new Rows.
-func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, queryID string, driverConfig *Config,
+func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, s3mgr s3manageriface.DownloaderAPI, queryID string, driverConfig *Config,
 	obs *DriverTracer) (*Rows, error) {
 	r := Rows{
 		athena:    athenaAPI,
 		s3:        s3,
+		mgr:       s3mgr,
 		ctx:       ctx,
 		queryID:   queryID,
 		config:    driverConfig,
@@ -71,23 +80,24 @@ func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3if
 }
 
 // NewRows is to create a new Rows.
-func NewRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, queryID string, driverConfig *Config,
+func NewRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, s3mgr s3manageriface.DownloaderAPI, queryID string, driverConfig *Config,
 	obs *DriverTracer) (*Rows, error) {
 	r := Rows{
 		athena:    athenaAPI,
 		s3:        s3,
+		mgr:       s3mgr,
 		ctx:       ctx,
 		queryID:   queryID,
 		config:    driverConfig,
 		tracer:    obs,
 		pageCount: -1,
 	}
-	// fetch the first result so we have column metadata
-	if err := r.fetchNextPage(); err != nil {
+	// download the results and open the resulting CSV for reading
+	if err := r.openResults(); err != nil {
 		return nil, err
 	}
-	// begin downloading the CSV results from S3
-	if err := r.openResults(); err != nil {
+	// fetch the first result so we have column metadata
+	if err := r.fetchNextPage(); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -119,10 +129,13 @@ func (r *Rows) Next(dest []driver.Value) error {
 		return io.EOF
 	}
 
+	r.rmu.RLock()
+	defer r.rmu.RUnlock()
 	next, err := r.results.Read()
 	if err != nil {
 		return err
 	}
+	r.readCount++
 
 	columns := r.ResultOutput.ResultSet.ResultSetMetadata.ColumnInfo
 	if err := r.convertRecord(columns, next, dest, r.config); err != nil {
@@ -134,6 +147,11 @@ func (r *Rows) Next(dest []driver.Value) error {
 
 func (r *Rows) openResults() error {
 	ctx, cancel := context.WithCancel(r.ctx)
+	r.resultsCanceler = cancel
+
+	r.rmu.Lock()
+	defer r.rmu.Unlock()
+
 	resp, err := r.s3.GetObjectWithContext(
 		ctx,
 		&s3.GetObjectInput{
@@ -145,13 +163,62 @@ func (r *Rows) openResults() error {
 		return err
 	}
 
-	r.resultsCanceler = cancel
+	go func() {
+		if r.config.GetScratchDir() == "" {
+			return
+		}
+		r.resultsFilename = filepath.Join(r.config.GetScratchDir(), "_athena", r.queryID)
+		scratchFile, err := os.Create(r.resultsFilename)
+		if err != nil {
+			return
+		}
+		_, err = r.mgr.DownloadWithContext(r.ctx,
+			scratchFile,
+			&s3.GetObjectInput{
+				Bucket: aws.String(r.config.GetOutputBucketname()),
+				Key:    aws.String(r.config.GetQueryResultKey(r.queryID)),
+			},
+		)
+		if err != nil {
+			return
+		}
+		err = scratchFile.Close()
+		if err != nil {
+			return
+		}
+		bufferedFile, err := os.Open(r.resultsFilename)
+		if err != nil {
+			return
+		}
+
+		r.rmu.Lock()
+		defer r.rmu.Unlock()
+		if r.ctx.Err() != nil {
+			// context was cancelled while we waited for lock
+			return
+		}
+		if r.resultsFile != nil {
+			r.resultsFile.Close()
+		}
+		r.resultsFile = bufferedFile
+		r.results = csv.NewReader(r.resultsFile)
+
+		// scan past read records
+		for i := int64(0); i < r.readCount; i++ {
+			r.results.Read()
+		}
+	}()
+
 	r.resultsFile = resp.Body
 	r.results = csv.NewReader(r.resultsFile)
 
 	// burn off the first row with headings
 	_, err = r.results.Read()
-	return err
+	if err != nil {
+		return err
+	}
+	r.readCount = 1
+	return nil
 }
 
 type pageOpt func(*athena.GetQueryResultsInput)
@@ -268,6 +335,9 @@ func (r *Rows) fetchNextPage(pageOpts ...pageOpt) error {
 
 // Close is to close Rows after reading all data.
 func (r *Rows) Close() error {
+	if r.resultsCanceler != nil {
+		r.resultsCanceler()
+	}
 	if r.ResultOutput != nil && r.ResultOutput.NextToken != nil {
 		r.tracer.Log(WarnLevel, "rows close prematurely, queryID: "+r.queryID)
 		r.ResultOutput = nil
@@ -276,8 +346,8 @@ func (r *Rows) Close() error {
 		r.resultsFile.Close()
 		r.results = nil
 	}
-	if r.resultsCanceler != nil {
-		r.resultsCanceler()
+	if r.resultsFilename != "" {
+		os.Remove(r.resultsFilename)
 	}
 	r.reachedLastPage = true
 	return nil
