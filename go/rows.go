@@ -167,7 +167,7 @@ func (r *Rows) openResults() error {
 		if r.config.GetScratchDir() == "" {
 			return
 		}
-		r.resultsFilename = filepath.Join(r.config.GetScratchDir(), "_athena", r.queryID)
+		r.resultsFilename = filepath.Join(r.config.GetScratchDir(), r.queryID)
 		scratchFile, err := os.Create(r.resultsFilename)
 		if err != nil {
 			return
