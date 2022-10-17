@@ -381,7 +381,7 @@ func (r *Rows) convertRecord(columns []*athena.ColumnInfo, rdata []string, ret [
 	driverConfig *Config) error {
 	for i, val := range rdata {
 		v := &val
-		if val == "" && columns[i].Nullable != nil && aws.StringValue(columns[i].Nullable) == "NULLABLE" {
+		if val == "" {
 			v = nil
 		}
 		value, err := r.athenaTypeToGoType(columns[i], v, driverConfig)
