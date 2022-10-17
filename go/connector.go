@@ -36,6 +36,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
 
 // SQLConnector is the connector for AWS Athena Driver.
@@ -106,10 +107,12 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 
 	athenaAPI := athena.New(awsSession)
 	s3API := s3.New(awsSession)
+	downloaderAPI := s3manager.NewDownloader(awsSession)
 	timeConnect := time.Since(now)
 	conn := &Connection{
 		athenaAPI: athenaAPI,
 		s3:        s3API,
+		s3mgr:     downloaderAPI,
 		connector: c,
 	}
 	c.tracer.Scope().Timer(DriverName + ".connector.connect").Record(timeConnect)
