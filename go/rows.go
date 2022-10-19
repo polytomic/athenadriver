@@ -240,6 +240,19 @@ func (r *Rows) openResults() error {
 	return nil
 }
 
+func (r *Rows) FetchRuntimeStatistics() (*athena.QueryRuntimeStatistics, error) {
+	resp, err := r.athena.GetQueryRuntimeStatisticsWithContext(
+		r.ctx,
+		&athena.GetQueryRuntimeStatisticsInput{
+			QueryExecutionId: aws.String(r.queryID),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return resp.QueryRuntimeStatistics, nil
+}
+
 func (r *Rows) fetchQueryExecution() error {
 	input := &athena.GetQueryExecutionInput{QueryExecutionId: aws.String(r.queryID)}
 	exec, err := r.athena.GetQueryExecutionWithContext(r.ctx, input)
