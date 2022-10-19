@@ -26,6 +26,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,11 +51,13 @@ type Rows struct {
 	ctx             context.Context
 	queryID         string
 	reachedLastPage bool
+	QueryExecution  *athena.QueryExecution
 	ResultOutput    *athena.GetQueryResultsOutput
 	config          *Config
 	tracer          *DriverTracer
 	pageCount       int64
 
+	resultsOpened   sync.Once
 	rmu             sync.RWMutex
 	readCount       int64
 	resultsCanceler context.CancelFunc
@@ -92,11 +95,12 @@ func NewRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3
 		tracer:    obs,
 		pageCount: -1,
 	}
-	// download the results and open the resulting CSV for reading
-	if err := r.openResults(); err != nil {
+
+	// fetch the query execution details so we know where to download from
+	if err := r.fetchQueryExecution(); err != nil {
 		return nil, err
 	}
-	// fetch the first result so we have column metadata
+	// fetch the first page to get column information
 	if err := r.fetchNextPage(); err != nil {
 		return nil, err
 	}
@@ -125,6 +129,16 @@ func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
 
 // Next is to get next result set page.
 func (r *Rows) Next(dest []driver.Value) error {
+	var err error
+	r.resultsOpened.Do(func() {
+		// download the results and open the resulting CSV for reading
+		err = r.openResults()
+	})
+	if err != nil {
+		r.reachedLastPage = true
+		return err
+	}
+
 	if r.reachedLastPage {
 		return io.EOF
 	}
@@ -152,11 +166,16 @@ func (r *Rows) openResults() error {
 	r.rmu.Lock()
 	defer r.rmu.Unlock()
 
+	resultLocation, err := url.Parse(*r.QueryExecution.ResultConfiguration.OutputLocation)
+	if err != nil {
+		return err
+	}
+
 	resp, err := r.s3.GetObjectWithContext(
 		ctx,
 		&s3.GetObjectInput{
-			Bucket: aws.String(r.config.GetOutputBucketname()),
-			Key:    aws.String(r.config.GetQueryResultKey(r.queryID)),
+			Bucket: aws.String(resultLocation.Host),
+			Key:    aws.String(strings.TrimPrefix(resultLocation.Path, "/")),
 		})
 	if err != nil {
 		cancel()
@@ -175,8 +194,8 @@ func (r *Rows) openResults() error {
 		_, err = r.mgr.DownloadWithContext(r.ctx,
 			scratchFile,
 			&s3.GetObjectInput{
-				Bucket: aws.String(r.config.GetOutputBucketname()),
-				Key:    aws.String(r.config.GetQueryResultKey(r.queryID)),
+				Bucket: aws.String(resultLocation.Host),
+				Key:    aws.String(strings.TrimPrefix(resultLocation.Path, "/")),
 			},
 		)
 		if err != nil {
@@ -221,30 +240,24 @@ func (r *Rows) openResults() error {
 	return nil
 }
 
-type pageOpt func(*athena.GetQueryResultsInput)
-
-func withToken(t *string) pageOpt {
-	return func(i *athena.GetQueryResultsInput) {
-		i.NextToken = t
+func (r *Rows) fetchQueryExecution() error {
+	input := &athena.GetQueryExecutionInput{QueryExecutionId: aws.String(r.queryID)}
+	exec, err := r.athena.GetQueryExecutionWithContext(r.ctx, input)
+	if err != nil {
+		return err
 	}
-}
-
-func withMaxResults(len int64) pageOpt {
-	return func(i *athena.GetQueryResultsInput) {
-		i.MaxResults = &len
-	}
+	r.QueryExecution = exec.QueryExecution
+	return nil
 }
 
 // fetchNextPage is to get next result set page; a pagination token may be
 // passed via withToken.
-func (r *Rows) fetchNextPage(pageOpts ...pageOpt) error {
+func (r *Rows) fetchNextPage() error {
 	var err error
 	resultsInput := &athena.GetQueryResultsInput{
 		QueryExecutionId: aws.String(r.queryID),
 	}
-	for _, opt := range pageOpts {
-		opt(resultsInput)
-	}
+
 	r.ResultOutput, err = r.athena.GetQueryResultsWithContext(r.ctx, resultsInput)
 	if err != nil {
 		r.tracer.Scope().Counter(DriverName + ".failure.fetchnextpage.getqueryresults").Inc(1)
