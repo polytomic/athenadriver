@@ -678,27 +678,27 @@ func isQueryTimeOut(startOfStartQueryExecution time.Time, queryType string, serv
 	ddlQueryTimeout := DDLQueryTimeout
 	dmlQueryTimeout := DMLQueryTimeout
 	if serviceLimitOverride != nil {
-		if serviceLimitOverride.GetDDLQueryTimeout() > 0 {
+		if serviceLimitOverride.GetDDLQueryTimeout() != 0 {
 			ddlQueryTimeout = serviceLimitOverride.GetDDLQueryTimeout()
 		}
-		if serviceLimitOverride.GetDMLQueryTimeout() > 0 {
+		if serviceLimitOverride.GetDMLQueryTimeout() != 0 {
 			dmlQueryTimeout = serviceLimitOverride.GetDMLQueryTimeout()
 		}
 	}
 	switch queryType {
 	case "DDL":
-		return time.Since(startOfStartQueryExecution) >
+		return ddlQueryTimeout >= 0 && time.Since(startOfStartQueryExecution) >
 			time.Duration(ddlQueryTimeout)*time.Second
 	case "DML":
-		return time.Since(startOfStartQueryExecution) >
+		return dmlQueryTimeout >= 0 && time.Since(startOfStartQueryExecution) >
 			time.Duration(dmlQueryTimeout)*time.Second
 	case "UTILITY":
-		return time.Since(startOfStartQueryExecution) >
+		return dmlQueryTimeout >= 0 && time.Since(startOfStartQueryExecution) >
 			time.Duration(dmlQueryTimeout)*time.Second
 	case "TIMEOUT_NOW":
 		return true
 	default:
-		return time.Since(startOfStartQueryExecution) >
+		return ddlQueryTimeout >= 0 && time.Since(startOfStartQueryExecution) >
 			time.Duration(ddlQueryTimeout)*time.Second
 	}
 }

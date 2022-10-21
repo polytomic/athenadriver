@@ -42,7 +42,7 @@ func NewServiceLimitOverride() *ServiceLimitOverride {
 
 // SetDDLQueryTimeout is to set the DDLQueryTimeout override.
 func (c *ServiceLimitOverride) SetDDLQueryTimeout(seconds int) error {
-	if seconds < PoolInterval {
+	if seconds >= 0 && seconds < PoolInterval {
 		return ErrServiceLimitOverride
 	}
 	c.ddlQueryTimeout = seconds
@@ -56,7 +56,7 @@ func (c *ServiceLimitOverride) GetDDLQueryTimeout() int {
 
 // SetDMLQueryTimeout is to set the DMLQueryTimeout override.
 func (c *ServiceLimitOverride) SetDMLQueryTimeout(seconds int) error {
-	if seconds < PoolInterval {
+	if seconds >= 0 && seconds < PoolInterval {
 		return ErrServiceLimitOverride
 	}
 	c.dmlQueryTimeout = seconds

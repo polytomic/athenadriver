@@ -223,6 +223,14 @@ func TestIsQueryTimeOut(t *testing.T) {
 	testConf.SetDDLQueryTimeout(30 * 60) // 30 minutes
 	assert.True(t, isQueryTimeOut(OneHourAgo, athena.StatementTypeDdl, testConf))
 	assert.True(t, isQueryTimeOut(OneHourAgo, "UNKNOWN", testConf))
+
+	disabledLimit := NewServiceLimitOverride()
+	assert.NoError(t, disabledLimit.SetDMLQueryTimeout(-1))
+	assert.False(t, isQueryTimeOut(OneHourAgo, athena.StatementTypeDml, disabledLimit))
+
+	assert.NoError(t, disabledLimit.SetDDLQueryTimeout(-1))
+	assert.False(t, isQueryTimeOut(OneHourAgo, athena.StatementTypeDdl, disabledLimit))
+	assert.False(t, isQueryTimeOut(OneHourAgo, "UNKNOWN", disabledLimit))
 }
 
 func TestEscapeBytesBackslash(t *testing.T) {
