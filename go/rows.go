@@ -24,6 +24,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -41,6 +42,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
 	"go.uber.org/zap"
+)
+
+var (
+	_ driver.Rows = (*Rows)(nil)
 )
 
 // Rows defines rows in AWS Athena ResultSet.
@@ -360,7 +365,14 @@ func (r *Rows) fetchNextPage() error {
 }
 
 // Close is to close Rows after reading all data.
-func (r *Rows) Close() error {
+func (r *Rows) Close() (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("panic in athena Rows.Close")
+		}
+	}()
+	r.reachedLastPage = true
+
 	if r.resultsCanceler != nil {
 		r.resultsCanceler()
 	}
@@ -375,7 +387,6 @@ func (r *Rows) Close() error {
 	if r.resultsFilename != "" {
 		os.Remove(r.resultsFilename)
 	}
-	r.reachedLastPage = true
 	return nil
 }
 
