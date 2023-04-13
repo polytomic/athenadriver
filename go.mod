@@ -12,5 +12,6 @@ require (
 	github.com/xwb1989/sqlparser v0.0.0-20180606152119-120387863bf2
 	go.uber.org/config v1.4.0
 	go.uber.org/fx v1.12.0
+	go.uber.org/multierr v1.5.0
 	go.uber.org/zap v1.15.0
 )
