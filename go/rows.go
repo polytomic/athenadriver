@@ -40,7 +40,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
-	"go.uber.org/multierr"
+	"github.com/getsentry/sentry-go"
 	"go.uber.org/zap"
 )
 
@@ -364,16 +364,7 @@ func (r *Rows) fetchNextPage() error {
 
 // Close is to close Rows after reading all data.
 func (r *Rows) Close() (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			panicErr := fmt.Errorf("panic in athena Rows.Close: %#v", r)
-			if err != nil {
-				err = multierr.Combine(err, panicErr)
-			} else {
-				err = panicErr
-			}
-		}
-	}()
+	defer sentry.Recover()
 	r.reachedLastPage = true
 
 	if r.resultsCanceler != nil {
