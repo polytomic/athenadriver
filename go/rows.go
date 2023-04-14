@@ -196,7 +196,6 @@ func (r *Rows) openResults() error {
 		if err != nil {
 			return
 		}
-		defer scratchFile.Close()
 		_, err = r.mgr.DownloadWithContext(ctx,
 			scratchFile,
 			&s3.GetObjectInput{
@@ -204,6 +203,11 @@ func (r *Rows) openResults() error {
 				Key:    aws.String(strings.TrimPrefix(resultLocation.Path, "/")),
 			},
 		)
+		if err != nil {
+			scratchFile.Close()
+			return
+		}
+		err = scratchFile.Close()
 		if err != nil {
 			return
 		}
