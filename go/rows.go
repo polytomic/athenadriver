@@ -196,17 +196,14 @@ func (r *Rows) openResults() error {
 		if err != nil {
 			return
 		}
-		_, err = r.mgr.DownloadWithContext(r.ctx,
+		defer scratchFile.Close()
+		_, err = r.mgr.DownloadWithContext(ctx,
 			scratchFile,
 			&s3.GetObjectInput{
 				Bucket: aws.String(resultLocation.Host),
 				Key:    aws.String(strings.TrimPrefix(resultLocation.Path, "/")),
 			},
 		)
-		if err != nil {
-			return
-		}
-		err = scratchFile.Close()
 		if err != nil {
 			return
 		}
@@ -217,7 +214,8 @@ func (r *Rows) openResults() error {
 
 		r.rmu.Lock()
 		defer r.rmu.Unlock()
-		if r.ctx.Err() != nil {
+		if ctx.Err() != nil {
+			bufferedFile.Close()
 			// context was cancelled while we waited for lock
 			return
 		}
