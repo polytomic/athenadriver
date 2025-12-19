@@ -287,6 +287,141 @@ func TestInterpolateParamsUint64(t *testing.T) {
 	assert.Equal(t, q, "SELECT 42")
 }
 
+func TestInterpolateParamsDateOnly(t *testing.T) {
+	testTime, err := time.Parse(time.DateOnly, "2024-07-01")
+	assert.Nil(t, err)
+
+	c := createTestConnection(t)
+	q, err := c.interpolateParams("SELECT ?", []driver.Value{testTime})
+	assert.Nil(t, err)
+	assert.Equal(t, "SELECT '2024-07-01 00:00:00'", q)
+}
+
+func TestInterpolateParamsTime(t *testing.T) {
+	testTime, err := time.Parse(time.RFC3339, "2024-07-01T01:02:03Z")
+	assert.Nil(t, err)
+
+	c := createTestConnection(t)
+	q, err := c.interpolateParams("SELECT ?", []driver.Value{testTime})
+	assert.Nil(t, err)
+	assert.Equal(t, "SELECT '2024-07-01 01:02:03'", q)
+}
+
+func TestInterpolateParamsTimeMicro(t *testing.T) {
+	testTimeMicro, err := time.Parse(time.RFC3339, "2024-07-02T01:02:03Z")
+	assert.Nil(t, err)
+	testTimeMicro = testTimeMicro.Add(time.Microsecond * 123456)
+
+	c := createTestConnection(t)
+	q, err := c.interpolateParams("SELECT ?", []driver.Value{testTimeMicro})
+	assert.Nil(t, err)
+	assert.Equal(t, "SELECT '2024-07-02 01:02:03.123456'", q)
+}
+
+func TestBuildExecutionParams(t *testing.T) {
+	testTime, err := time.Parse(time.RFC3339, "2024-07-01T00:00:00Z")
+	assert.Nil(t, err)
+	testTimeMicro, err := time.Parse(time.RFC3339, "2024-07-02T01:02:03Z")
+	assert.Nil(t, err)
+	testTimeMicro = testTimeMicro.Add(time.Microsecond * 123456)
+
+	testCases := []struct {
+		name        string
+		inputArgs   []driver.Value
+		expectedErr error
+		expected    []*string
+	}{
+		{
+			name:        "No arguments",
+			inputArgs:   []driver.Value{},
+			expectedErr: nil,
+			expected:    []*string{},
+		},
+		{
+			name:        "Bool",
+			inputArgs:   []driver.Value{true, false},
+			expectedErr: nil,
+			expected:    []*string{aws.String("1"), aws.String("0")},
+		},
+		{
+			name:        "Zero-value time",
+			inputArgs:   []driver.Value{time.Time{}},
+			expectedErr: nil,
+			expected:    []*string{aws.String("'0000-00-00'")}, // Special-cased. Matches interpolateParams behavior.
+		},
+		{
+			// Like interpolateParams(), buildExecutionParams() adds an additional 500 nanoseconds.
+			name:        "501 nanoseconds is still < 1 microsecond", // From TestConnection_InterpolateParams_Bool
+			inputArgs:   []driver.Value{time.Time{}.Add(time.Nanosecond)},
+			expectedErr: nil,
+			expected:    []*string{aws.String("'0001-01-01 00:00:00'")}, // Matches interpolateParams behavior.
+		},
+		{
+			name:        "For non-zero-value time.Times, Date and time are present, even if time is zero-value",
+			inputArgs:   []driver.Value{testTime},
+			expectedErr: nil,
+			expected:    []*string{aws.String("'2024-07-01 00:00:00'")},
+		},
+		{
+			name:        "Datetime with Microseconds",
+			inputArgs:   []driver.Value{testTimeMicro},
+			expectedErr: nil,
+			expected:    []*string{aws.String("'2024-07-02 01:02:03.123456'")},
+		},
+		{
+			name:        "Byte Slice - Caller must use utils.go/FormatBytes before passing in query args",
+			inputArgs:   []driver.Value{[]byte{'0'}},
+			expectedErr: nil,
+			expected:    []*string{aws.String("0")}, // No change
+		},
+		{
+			name:        "Byte Slice - After FormatBytes",
+			inputArgs:   []driver.Value{FormatBytes([]byte{'0'})},
+			expectedErr: nil,
+			expected:    []*string{aws.String("_binary'0'")},
+		},
+		{
+			name:        "String - Caller must use utils.go/FormatString before passing in query args",
+			inputArgs:   []driver.Value{"This is a string"},
+			expectedErr: nil,
+			expected:    []*string{aws.String("This is a string")}, // No change
+		},
+		{
+			name:        "String - After FormatString",
+			inputArgs:   []driver.Value{FormatString("This is a string with ' single quotes and \n chars")},
+			expectedErr: nil,
+			expected:    []*string{aws.String("'This is a string with '' single quotes and \\n chars'")},
+		},
+		{
+			name:        "Nil -> NULL",
+			inputArgs:   []driver.Value{nil},
+			expectedErr: nil,
+			expected:    []*string{aws.String("NULL")},
+		},
+		{
+			name: "Every supported type",
+			inputArgs: []driver.Value{int64(-10), uint64(42), 1.23, true, testTime, []byte("This is a slice of bytes"),
+				"This is a string"},
+			expectedErr: nil,
+			expected: []*string{aws.String("-10"), aws.String("42"), aws.String("1.23"), aws.String("1"),
+				aws.String("'2024-07-01 00:00:00'"), aws.String("This is a slice of bytes"), aws.String("This is a string")},
+		},
+	}
+	c := createTestConnection(t)
+	for _, tc := range testCases {
+		// https://go.dev/blog/loopvar-preview
+		// Pre-Go-1.22, the loop variable `tc` is shared between each loop iteration. Because t.Parallel() is called
+		// in createTestConnection(), the test cases run concurrently, and `tc` is likely to change mid-test. We can
+		// avoid that by creating a local copy.
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			actual, err := c.buildExecutionParams(tc.inputArgs)
+			assert.Equal(t, tc.expectedErr, err)
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
 func TestCheckNamedValue(t *testing.T) {
 	c := createTestConnection(t)
 	value := driver.NamedValue{Value: uint64(0)}
@@ -344,7 +479,7 @@ func TestConnection_QueryContext3(t *testing.T) {
 		athenaAPI: newMockAthenaClient(),
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu")
@@ -374,7 +509,7 @@ func TestConnection_QueryContext4(t *testing.T) {
 		athenaAPI: nm,
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu")
@@ -407,7 +542,7 @@ func TestConnection_QueryContext5(t *testing.T) {
 		athenaAPI: nm,
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu")
@@ -434,7 +569,7 @@ func TestConnection_QueryContext6(t *testing.T) {
 		athenaAPI: nm,
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu")
@@ -575,7 +710,7 @@ func createConnectionFixture() *Connection {
 		athenaAPI: nm,
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber Author", "henry.wu")
 	wgTags.AddTag("Uber Role", "Engineer")
@@ -599,7 +734,7 @@ func TestMoneyWise(t *testing.T) {
 		athenaAPI: newMockAthenaClient(),
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu")
@@ -647,7 +782,7 @@ func TestConnection_CachedQuery(t *testing.T) {
 		athenaAPI: newMockAthenaClient(),
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 	testConf := NewNoOpsConfig()
 	err := testConf.SetOutputBucket(s3bucket)
 	assert.Nil(t, err)
@@ -669,7 +804,7 @@ func Test_PseudoCommand(t *testing.T) {
 		athenaAPI: newMockAthenaClient(),
 		connector: NoopsSQLConnector(),
 	}
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu")

@@ -473,16 +473,26 @@ Sample output:
 2
 ```
 
-You can also use the `?` syntax with `DB.Query()` or `DB.Exec()` directly.
+### Parameterized Queries
+
+Athena supports parameterized queries: https://docs.aws.amazon.com/athena/latest/ug/querying-with-prepared-statements.html.
+Parameterized queries allow for re-running the same query with different parameter values at runtime, and help guard 
+against SQL injection attacks. This is especially useful if some of your parameter values are derived from user input.
+
+To use parameterized queries, use `?` as placeholders in the query you pass to `DB.Query()` or `DB.Exec()`.
+For each parameter, pass in arguments in the order they should replace `?`. For strings and byte slice arguments, use 
+`drv.FormatString()` and `drv.FormatBytes()` to escape special characters and format per Athena's requirements.
+
+Example:
 
 ```go
-	rows, err := db.Query("SELECT request_timestamp,elb_name "+
-		"from sampledb.elb_logs where url=? limit 1",
-		"https://www.example.com/jobs/878")
-	if err != nil {
-		return
-	}
-	println(drv.ColsRowsToCSV(rows))
+query := "SELECT request_timestamp, elb_name FROM sampledb.elb_logs WHERE url=? limit 1"
+args := []any{drv.FormatString("https://www.example.com/jobs/878")}
+rows, err := db.Query(query, args)
+if err != nil {
+    return
+}
+println(drv.ColsRowsToCSV(rows))
 ```
 
 Sample Output:
@@ -966,9 +976,9 @@ import (
 	"log"
 	"time"
 	"github.com/cactus/go-statsd-client/statsd"
-	tallystatsd "github.com/uber-go/tally/statsd"
+	tallystatsd "github.com/uber-go/tally/v4/statsd"
 	drv "github.com/uber/athenadriver/go"
-	"github.com/uber-go/tally"
+	"github.com/uber-go/tally/v4"
 )
 
 func newScope() (tally.Scope, io.Closer) {
@@ -1199,6 +1209,13 @@ For the contributors, the following is `athenadriver` Package's UML Class Diagra
 
 ## ChangeLog
 
+### v1.1.15 - Merge community contribution (March 03, 2024)
+
+  - Rename S3 bucket in test code (@jonathanbaker7 Jonathan Baker, @henrywoo)
+  - Make poll interval configurable (@keshav-dataco Keshav Murthy)
+  - Add microseconds and nanosecond time format parsing (@Sly1024 Szilveszter Safar)
+  - Add option to return missing values as nil (@kevinwcyu Kevin Yu)
+
 ### v1.1.14 - Merge community contribution (August 19, 2022)
 
   - Adding default AWS SDK credential resolution to connector (@dfreiman-hbo, Dan Freiman)
@@ -1219,7 +1236,7 @@ For the contributors, the following is `athenadriver` Package's UML Class Diagra
 [cov-img]: https://codecov.io/gh/uber/athenadriver/branch/master/graph/badge.svg
 [cov]: https://codecov.io/gh/uber/athenadriver
 
-[release-img]: https://img.shields.io/badge/release-v1.1.14-red
+[release-img]: https://img.shields.io/badge/release-v1.1.15-red
 [release]: https://github.com/uber/athenadriver/releases
 
 [report-card-img]: https://goreportcard.com/badge/github.com/uber/athenadriver

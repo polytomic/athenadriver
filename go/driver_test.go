@@ -28,7 +28,7 @@ import (
 )
 
 func TestDriver(t *testing.T) {
-	dsn := "s3://henry.wu%40uber.com:@query-results-henry-wu-us-east-2?db=default&" +
+	dsn := "s3://henry.wu%40uber.com:@fake-query-results-arbitrary-bucket?db=default&" +
 		"region=us-east-1&workgroup_config=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++Enfo" +
 		"rceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++Reques" +
 		"terPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"

@@ -23,12 +23,12 @@ package athenadriver
 import (
 	"net/url"
 	"testing"
-
+	"time"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestAthenaConfig(t *testing.T) {
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wgTags := NewWGTags()
 	wgTags.AddTag("Uber User", "henry.wu@uber.com")
@@ -45,8 +45,8 @@ func TestAthenaConfig(t *testing.T) {
 	err = testConf.SetWorkGroup(wg)
 	assert.Nil(t, err)
 	assert.Equal(t, testConf.GetUser(), "henry.wu@uber.com")
-	assert.Equal(t, testConf.GetOutputBucket(), "s3://query-results-henry-wu-us-east-2/")
-	expected := "s3://henry.wu%40uber.com:@query-results-henry-wu-us-east-2?WGRemoteCreation=true&db=default&missingAsEmptyString=true&region=us-east-1&tag=%7CUber+User%60henry.wu%40uber.com%7CUber+Asset%60abc.efg&workgroupConfig=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++EnforceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++RequesterPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"
+	assert.Equal(t, testConf.GetOutputBucket(), "s3://fake-query-results-arbitrary-bucket/")
+	expected := "s3://henry.wu%40uber.com:@fake-query-results-arbitrary-bucket?WGRemoteCreation=true&db=default&missingAsEmptyString=true&region=us-east-1&tag=%7CUber+User%60henry.wu%40uber.com%7CUber+Asset%60abc.efg&workgroupConfig=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++EnforceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++RequesterPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"
 	actual := testConf.Stringify()
 	assert.Equal(t, actual, expected)
 	w := testConf.GetWorkgroup()
@@ -58,24 +58,24 @@ func TestAthenaConfig(t *testing.T) {
 }
 
 func TestGetOutputBucket(t *testing.T) {
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/local/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/local/"
 	testConf := NewNoOpsConfig()
 	err := testConf.SetOutputBucket(s3bucket)
 	conf, _ := NewConfig(testConf.Stringify())
 	assert.Nil(t, err)
-	assert.Equal(t, testConf.GetOutputBucket(), "s3://query-results-henry-wu-us-east-2/local/")
-	assert.Equal(t, conf.GetOutputBucket(), "s3://query-results-henry-wu-us-east-2/local/")
+	assert.Equal(t, testConf.GetOutputBucket(), "s3://fake-query-results-arbitrary-bucket/local/")
+	assert.Equal(t, conf.GetOutputBucket(), "s3://fake-query-results-arbitrary-bucket/local/")
 }
 
 func TestAthenaConfigWrongS3Bucket(t *testing.T) {
-	var s3bucket string = "file:///query-results-henry-wu-us-east-2/"
+	var s3bucket string = "file:///fake-query-results-arbitrary-bucket/"
 	testConf := NewNoOpsConfig()
 	err := testConf.SetOutputBucket(s3bucket)
 	assert.NotNil(t, err)
 }
 
 func TestConfig_SetOutputBucket(t *testing.T) {
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket"
 	testConf := NewNoOpsConfig()
 	err := testConf.SetOutputBucket(s3bucket)
 	assert.Nil(t, err)
@@ -98,7 +98,7 @@ func TestAthenaConfigWrongWG(t *testing.T) {
 }
 
 func TestAthenaConfigSafeString(t *testing.T) {
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	wg := NewDefaultWG("henry_wu", nil, nil)
 	testConf := NewNoOpsConfig()
@@ -116,9 +116,9 @@ func TestAthenaConfigSafeString(t *testing.T) {
 	assert.Nil(t, err)
 	testConf.SetSessionToken("thisisaToken")
 	assert.Equal(t, testConf.GetUser(), "henry.wu@uber.com")
-	assert.Equal(t, testConf.GetOutputBucket(), "s3://query-results-henry-wu-us-east-2/")
-	expectedRawString := "s3://henry.wu%40uber.com:@query-results-henry-wu-us-east-2?WGRemoteCreation=true&accessID=thisisanID&db=default&missingAsEmptyString=true&region=us-east-1&secretAccessKey=thisisaKey&sessionToken=thisisaToken&tag=&workgroupConfig=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++EnforceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++RequesterPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"
-	expectedSafeString := "s3://henry.wu%40uber.com:@query-results-henry-wu-us-east-2?WGRemoteCreation=true&accessID=*&db=default&missingAsEmptyString=true&region=us-east-1&secretAccessKey=*&sessionToken=*&tag=&workgroupConfig=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++EnforceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++RequesterPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"
+	assert.Equal(t, testConf.GetOutputBucket(), "s3://fake-query-results-arbitrary-bucket/")
+	expectedRawString := "s3://henry.wu%40uber.com:@fake-query-results-arbitrary-bucket?WGRemoteCreation=true&accessID=thisisanID&db=default&missingAsEmptyString=true&region=us-east-1&secretAccessKey=thisisaKey&sessionToken=thisisaToken&tag=&workgroupConfig=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++EnforceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++RequesterPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"
+	expectedSafeString := "s3://henry.wu%40uber.com:@fake-query-results-arbitrary-bucket?WGRemoteCreation=true&accessID=*&db=default&missingAsEmptyString=true&region=us-east-1&secretAccessKey=*&sessionToken=*&tag=&workgroupConfig=%7B%0A++BytesScannedCutoffPerQuery%3A+1073741824%2C%0A++EnforceWorkGroupConfiguration%3A+true%2C%0A++PublishCloudWatchMetricsEnabled%3A+true%2C%0A++RequesterPaysEnabled%3A+false%0A%7D&workgroupName=henry_wu"
 	actualRaw := testConf.Stringify()
 	actualSafe := testConf.SafeStringify()
 	assert.Equal(t, expectedRawString, actualRaw)
@@ -176,7 +176,7 @@ func TestConfig_IsMissingAsNil(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	testConf.SetMissingAsNil(true)
 	assert.True(t, testConf.IsMissingAsNil())
-	testConf.SetMissingAsDefault(false)
+	testConf.SetMissingAsNil(false)
 	assert.False(t, testConf.IsMissingAsNil())
 }
 
@@ -296,7 +296,7 @@ func TestConfig_SetAWSProfile(t *testing.T) {
 }
 
 func TestConfig_SetServiceLimitOverride(t *testing.T) {
-	var s3bucket string = "s3://query-results-henry-wu-us-east-2/"
+	var s3bucket string = "s3://fake-query-results-arbitrary-bucket/"
 
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetOutputBucket(s3bucket)
@@ -307,7 +307,7 @@ func TestConfig_SetServiceLimitOverride(t *testing.T) {
 	testServiceLimitOverride := testConf.GetServiceLimitOverride()
 	assert.Equal(t, ddlQueryTimeout, testServiceLimitOverride.GetDDLQueryTimeout())
 
-	expected := "s3://query-results-henry-wu-us-east-2?DDLQueryTimeout=60000&DMLQueryTimeout=0&WGRemoteCreation=true&db=default&missingAsEmptyString=true&region=us-east-1"
+	expected := "s3://fake-query-results-arbitrary-bucket?DDLQueryTimeout=60000&DMLQueryTimeout=0&WGRemoteCreation=true&db=default&missingAsEmptyString=true&region=us-east-1"
 	assert.Equal(t, expected, testConf.Stringify())
 
 	dmlQueryTimeout := 60 * 60 // 60 minutes
@@ -317,6 +317,19 @@ func TestConfig_SetServiceLimitOverride(t *testing.T) {
 	assert.Equal(t, ddlQueryTimeout, testServiceLimitOverride.GetDDLQueryTimeout())
 	assert.Equal(t, dmlQueryTimeout, testServiceLimitOverride.GetDMLQueryTimeout())
 
-	expected = "s3://query-results-henry-wu-us-east-2?DDLQueryTimeout=60000&DMLQueryTimeout=3600&WGRemoteCreation=true&db=default&missingAsEmptyString=true&region=us-east-1"
+	expected = "s3://fake-query-results-arbitrary-bucket?DDLQueryTimeout=60000&DMLQueryTimeout=3600&WGRemoteCreation=true&db=default&missingAsEmptyString=true&region=us-east-1"
 	assert.Equal(t, expected, testConf.Stringify())
+}
+
+func TestConfig_ResultPollIntervalOverride(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetResultPollIntervalSeconds(1)
+	interval := testConf.GetResultPollIntervalSeconds()
+	assert.Equal(t, time.Duration(1)*time.Second, interval)
+}
+
+func TestConfig_ResultPollIntervalDefault(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	interval := testConf.GetResultPollIntervalSeconds()
+	assert.Equal(t, time.Second*time.Duration(PoolInterval), interval)
 }
