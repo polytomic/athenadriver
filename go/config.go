@@ -76,6 +76,7 @@ var (
 )
 
 // NewDefaultConfig is to new a Config with some default values.
+// accessID and secretAccessKey are optional when using IAM role authentication.
 func NewDefaultConfig(outputBucket string, region string, accessID string,
 	secretAccessKey string) (*Config, error) {
 	conf := NewNoOpsConfig()
@@ -87,13 +88,21 @@ func NewDefaultConfig(outputBucket string, region string, accessID string,
 	if err != nil {
 		return nil, err
 	}
-	err = conf.SetAccessID(accessID)
-	if err != nil {
-		return nil, err
+	// Only set access credentials if provided (they're optional when using IAM roles)
+	if accessID != "" {
+		err = conf.SetAccessID(accessID)
+		if err != nil {
+			return nil, err
+		}
 	}
-	err = conf.SetSecretAccessKey(secretAccessKey)
+	if secretAccessKey != "" {
+		err = conf.SetSecretAccessKey(secretAccessKey)
+		if err != nil {
+			return nil, err
+		}
+	}
 	conf.SetResultPollIntervalSeconds(PoolInterval)
-	return conf, err
+	return conf, nil
 }
 
 // NewNoOpsConfig is to create a noop version of driver Config WITHOUT credentials.

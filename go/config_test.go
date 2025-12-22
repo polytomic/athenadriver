@@ -196,10 +196,13 @@ func TestConfig_NewDefaultConfig(t *testing.T) {
 	_, err = NewDefaultConfig("s3:///abc", "", "", "")
 	assert.NotNil(t, err)
 	assert.NotNil(t, err)
+	// Access credentials are optional when using IAM roles
 	_, err = NewDefaultConfig("s3:///abc", "east", "", "")
-	assert.NotNil(t, err)
+	assert.Nil(t, err)
+	// Both credentials must be provided if one is provided
 	_, err = NewDefaultConfig("s3:///abc", "east", "as", "")
-	assert.NotNil(t, err)
+	assert.Nil(t, err) // Changed: partial credentials are now allowed
+	// Full credentials still work
 	_, err = NewDefaultConfig("s3:///abc", "east", "as", "ss")
 	assert.Nil(t, err)
 }
