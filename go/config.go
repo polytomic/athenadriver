@@ -25,8 +25,8 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -60,6 +60,15 @@ var (
 	}
 	stsRegionalEndpointKey = []string{
 		"AWS_STS_REGIONAL_ENDPOINTS",
+	}
+	roleArnEnvKey = []string{
+		"AWS_ROLE_ARN",
+	}
+	externalIDEnvKey = []string{
+		"AWS_EXTERNAL_ID",
+	}
+	roleSessionNameEnvKey = []string{
+		"AWS_ROLE_SESSION_NAME",
 	}
 )
 
@@ -501,4 +510,53 @@ func (c *Config) GetServiceLimitOverride() *ServiceLimitOverride {
 	serviceLimitOverride := NewServiceLimitOverride()
 	serviceLimitOverride.SetFromValues(c.values)
 	return serviceLimitOverride
+}
+
+// SetRoleArn is a setter for the IAM role ARN to assume
+func (c *Config) SetRoleArn(roleArn string) {
+	c.values.Set("roleArn", roleArn)
+}
+
+// GetRoleArn is a getter for the IAM role ARN to assume. It will try to get the role ARN from:
+//  1. string stored in c.values
+//  2. environmental variable ${AWS_ROLE_ARN}
+func (c *Config) GetRoleArn() string {
+	if val := c.values.Get("roleArn"); val != "" {
+		return val
+	}
+	return GetFromEnvVal(roleArnEnvKey)
+}
+
+// SetExternalID is a setter for the external ID used when assuming a role
+func (c *Config) SetExternalID(externalID string) {
+	c.values.Set("externalID", externalID)
+}
+
+// GetExternalID is a getter for the external ID. It will try to get the external ID from:
+//  1. string stored in c.values
+//  2. environmental variable ${AWS_EXTERNAL_ID}
+func (c *Config) GetExternalID() string {
+	if val := c.values.Get("externalID"); val != "" {
+		return val
+	}
+	return GetFromEnvVal(externalIDEnvKey)
+}
+
+// SetRoleSessionName is a setter for the session name when assuming a role
+func (c *Config) SetRoleSessionName(sessionName string) {
+	c.values.Set("roleSessionName", sessionName)
+}
+
+// GetRoleSessionName is a getter for the role session name. It will try to get the session name from:
+//  1. string stored in c.values
+//  2. environmental variable ${AWS_ROLE_SESSION_NAME}
+//  3. default value "athenadriver-session" if not set
+func (c *Config) GetRoleSessionName() string {
+	if val := c.values.Get("roleSessionName"); val != "" {
+		return val
+	}
+	if envVal := GetFromEnvVal(roleSessionNameEnvKey); envVal != "" {
+		return envVal
+	}
+	return "athenadriver-session"
 }

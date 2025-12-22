@@ -4,7 +4,7 @@ go 1.13
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.4.1
-	github.com/aws/aws-sdk-go v1.51.3
+	github.com/aws/aws-sdk-go v1.55.8
 	github.com/cactus/go-statsd-client/statsd v0.0.0-20200423205355-cb0885a1018c
 	github.com/getsentry/sentry-go v0.14.0
 	github.com/jedib0t/go-pretty/v6 v6.2.7

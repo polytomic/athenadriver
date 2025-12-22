@@ -33,6 +33,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -63,7 +64,8 @@ func (c *SQLConnector) Driver() driver.Driver {
 // The order to find auth information to create session is:
 // 1. Manually set  AWS profile in Config by calling config.SetAWSProfile(profileName)
 // 2. AWS_SDK_LOAD_CONFIG
-// 3. Static Credentials
+// 3. IAM Role Assumption with optional External ID
+// 4. Static Credentials
 // Ref: https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html
 func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	now := time.Now()
@@ -86,6 +88,31 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		} else {
 			awsSession, err = session.NewSession(&aws.Config{})
 		}
+	} else if roleArn := c.config.GetRoleArn(); roleArn != "" {
+		// IAM Role Assumption with optional External ID
+		// First, create a base session for assuming the role
+		baseSession, err := c.createBaseSession()
+		if err != nil {
+			c.tracer.Scope().Counter(DriverName + ".failure.sqlconnector.newsession").Inc(1)
+			return nil, err
+		}
+
+		// Build AssumeRole options
+		assumeRoleFunc := func(p *stscreds.AssumeRoleProvider) {
+			p.RoleSessionName = c.config.GetRoleSessionName()
+			if externalID := c.config.GetExternalID(); externalID != "" {
+				p.ExternalID = aws.String(externalID)
+			}
+		}
+
+		// Create credentials using AssumeRole
+		creds := stscreds.NewCredentials(baseSession, roleArn, assumeRoleFunc)
+
+		awsConfig := &aws.Config{
+			Region:      aws.String(c.config.GetRegion()),
+			Credentials: creds,
+		}
+		awsSession, err = session.NewSession(awsConfig)
 	} else if c.config.GetAccessID() != "" {
 		staticCredentials := credentials.NewStaticCredentials(c.config.GetAccessID(),
 			c.config.GetSecretAccessKey(),
@@ -117,4 +144,27 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 	c.tracer.Scope().Timer(DriverName + ".connector.connect").Record(timeConnect)
 	return conn, nil
+}
+
+// createBaseSession creates a base AWS session for assuming a role.
+// This session uses credentials from either static config, environment variables, or the default credential chain.
+func (c *SQLConnector) createBaseSession() (*session.Session, error) {
+	if c.config.GetAccessID() != "" {
+		// Use static credentials if provided
+		staticCredentials := credentials.NewStaticCredentials(
+			c.config.GetAccessID(),
+			c.config.GetSecretAccessKey(),
+			c.config.GetSessionToken(),
+		)
+		awsConfig := &aws.Config{
+			Region:      aws.String(c.config.GetRegion()),
+			Credentials: staticCredentials,
+		}
+		return session.NewSession(awsConfig)
+	}
+
+	// Fall back to default credential chain (environment variables, EC2 instance profile, etc.)
+	return session.NewSession(&aws.Config{
+		Region: aws.String(c.config.GetRegion()),
+	})
 }

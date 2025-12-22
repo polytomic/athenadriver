@@ -21,10 +21,10 @@
 package athenadriver
 
 import (
+	"github.com/stretchr/testify/assert"
 	"net/url"
 	"testing"
 	"time"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestAthenaConfig(t *testing.T) {
@@ -332,4 +332,49 @@ func TestConfig_ResultPollIntervalDefault(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	interval := testConf.GetResultPollIntervalSeconds()
 	assert.Equal(t, time.Second*time.Duration(PoolInterval), interval)
+}
+
+func TestConfig_SetRoleArn(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetRoleArn("arn:aws:iam::123456789012:role/TestRole")
+	assert.Equal(t, "arn:aws:iam::123456789012:role/TestRole", testConf.GetRoleArn())
+}
+
+func TestConfig_SetExternalID(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetExternalID("my-external-id-12345")
+	assert.Equal(t, "my-external-id-12345", testConf.GetExternalID())
+}
+
+func TestConfig_SetRoleSessionName(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetRoleSessionName("my-session-name")
+	assert.Equal(t, "my-session-name", testConf.GetRoleSessionName())
+}
+
+func TestConfig_GetRoleSessionNameDefault(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	assert.Equal(t, "athenadriver-session", testConf.GetRoleSessionName())
+}
+
+func TestConfig_RoleArnInDSN(t *testing.T) {
+	dsn := "s3://fake-bucket/?region=us-east-1&roleArn=arn:aws:iam::123456789012:role/TestRole&externalID=my-external-id"
+	testConf, err := NewConfig(dsn)
+	assert.Nil(t, err)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/TestRole", testConf.GetRoleArn())
+	assert.Equal(t, "my-external-id", testConf.GetExternalID())
+}
+
+func TestConfig_RoleArnStringify(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetOutputBucket("s3://fake-bucket/")
+	testConf.SetRegion("us-east-1")
+	testConf.SetRoleArn("arn:aws:iam::123456789012:role/TestRole")
+	testConf.SetExternalID("my-external-id")
+	testConf.SetRoleSessionName("my-session")
+
+	stringified := testConf.Stringify()
+	assert.Contains(t, stringified, "roleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2FTestRole")
+	assert.Contains(t, stringified, "externalID=my-external-id")
+	assert.Contains(t, stringified, "roleSessionName=my-session")
 }
