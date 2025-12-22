@@ -378,3 +378,56 @@ func TestConfig_RoleArnStringify(t *testing.T) {
 	assert.Contains(t, stringified, "externalID=my-external-id")
 	assert.Contains(t, stringified, "roleSessionName=my-session")
 }
+
+func TestConfig_SetSessionTag(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetSessionTag("Environment", "Production")
+	testConf.SetSessionTag("Team", "DataScience")
+
+	tags := testConf.GetSessionTags()
+	assert.NotNil(t, tags)
+	assert.Equal(t, "Production", tags["Environment"])
+	assert.Equal(t, "DataScience", tags["Team"])
+}
+
+func TestConfig_GetSessionTagsEmpty(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	tags := testConf.GetSessionTags()
+	assert.Nil(t, tags)
+}
+
+func TestConfig_ClearSessionTags(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetSessionTag("Environment", "Production")
+	testConf.SetSessionTag("Team", "DataScience")
+
+	tags := testConf.GetSessionTags()
+	assert.NotNil(t, tags)
+	assert.Equal(t, 2, len(tags))
+
+	testConf.ClearSessionTags()
+	tags = testConf.GetSessionTags()
+	assert.Nil(t, tags)
+}
+
+func TestConfig_SessionTagsInDSN(t *testing.T) {
+	dsn := "s3://fake-bucket/?region=us-east-1&sessionTags=Environment%60Production%7CTeam%60DataScience"
+	testConf, err := NewConfig(dsn)
+	assert.Nil(t, err)
+
+	tags := testConf.GetSessionTags()
+	assert.NotNil(t, tags)
+	assert.Equal(t, "Production", tags["Environment"])
+	assert.Equal(t, "DataScience", tags["Team"])
+}
+
+func TestConfig_SessionTagsStringify(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	testConf.SetOutputBucket("s3://fake-bucket/")
+	testConf.SetRegion("us-east-1")
+	testConf.SetSessionTag("Environment", "Production")
+	testConf.SetSessionTag("CostCenter", "12345")
+
+	stringified := testConf.Stringify()
+	assert.Contains(t, stringified, "sessionTags=Environment%60Production%7CCostCenter%6012345")
+}

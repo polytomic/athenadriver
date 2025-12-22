@@ -43,7 +43,12 @@ func useAssumeRoleWithExternalID() {
 	conf.SetExternalID("my-external-id-12345")
 	conf.SetRoleSessionName("athena-query-session")
 
-	// 3. Open Connection - the driver will automatically assume the role
+	// 3. Add session tags for ABAC (Attribute-Based Access Control)
+	conf.SetSessionTag("Environment", "Production")
+	conf.SetSessionTag("Team", "DataScience")
+	conf.SetSessionTag("CostCenter", "12345")
+
+	// 4. Open Connection - the driver will automatically assume the role
 	db, err := sql.Open(drv.DriverName, conf.Stringify())
 	if err != nil {
 		fmt.Println("Error opening connection:", err)
@@ -51,7 +56,7 @@ func useAssumeRoleWithExternalID() {
 	}
 	defer db.Close()
 
-	// 4. Query and print results
+	// 5. Query and print results
 	var i int
 	err = db.QueryRow("SELECT 123").Scan(&i)
 	if err != nil {

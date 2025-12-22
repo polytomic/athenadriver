@@ -38,6 +38,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go/service/sts"
 )
 
 // SQLConnector is the connector for AWS Athena Driver.
@@ -102,6 +103,15 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 			p.RoleSessionName = c.config.GetRoleSessionName()
 			if externalID := c.config.GetExternalID(); externalID != "" {
 				p.ExternalID = aws.String(externalID)
+			}
+			// Add session tags if configured
+			if sessionTags := c.config.GetSessionTags(); sessionTags != nil && len(sessionTags) > 0 {
+				for key, value := range sessionTags {
+					p.Tags = append(p.Tags, &sts.Tag{
+						Key:   aws.String(key),
+						Value: aws.String(value),
+					})
+				}
 			}
 		}
 

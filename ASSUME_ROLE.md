@@ -1,15 +1,16 @@
-# IAM Role Assumption with External ID
+# IAM Role Assumption with External ID and Session Tags
 
-This document explains how to use IAM role assumption with athenadriver, including support for external IDs.
+This document explains how to use IAM role assumption with athenadriver, including support for external IDs and session tags.
 
 ## Overview
 
-The athenadriver now supports assuming IAM roles with optional external IDs. This is useful when:
+The athenadriver now supports assuming IAM roles with optional external IDs and session tags. This is useful when:
 
 - You need to access resources in a different AWS account
 - You want to use temporary credentials with limited privileges
 - You need to satisfy security requirements that mandate external IDs for cross-account access
 - You want to implement least-privilege access patterns
+- You need attribute-based access control (ABAC) using session tags
 
 ## Configuration
 
@@ -34,6 +35,10 @@ conf.SetRoleArn("arn:aws:iam::123456789012:role/AthenaAccessRole")
 conf.SetExternalID("my-external-id-12345")  // Optional
 conf.SetRoleSessionName("my-session-name")   // Optional, defaults to "athenadriver-session"
 
+// Add session tags (optional, for ABAC)
+conf.SetSessionTag("Environment", "Production")
+conf.SetSessionTag("Team", "DataScience")
+
 // Open connection
 db, err := sql.Open(drv.DriverName, conf.Stringify())
 ```
@@ -45,6 +50,7 @@ dsn := "s3://my-bucket/results/?region=us-east-1&db=default" +
     "&roleArn=arn:aws:iam::123456789012:role/AthenaAccessRole" +
     "&externalID=my-external-id" +
     "&roleSessionName=my-session" +
+    "&sessionTags=Environment`Production|Team`DataScience" +
     "&accessID=YOUR_ACCESS_KEY" +
     "&secretAccessKey=YOUR_SECRET_KEY"
 
@@ -58,6 +64,9 @@ db, err := sql.Open(drv.DriverName, dsn)
 | Role ARN | `SetRoleArn()` | `roleArn` | `AWS_ROLE_ARN` | Yes (for role assumption) | - |
 | External ID | `SetExternalID()` | `externalID` | `AWS_EXTERNAL_ID` | No | - |
 | Session Name | `SetRoleSessionName()` | `roleSessionName` | `AWS_ROLE_SESSION_NAME` | No | `athenadriver-session` |
+| Session Tags | `SetSessionTag(key, value)` | `sessionTags` | `AWS_SESSION_TAGS` | No | - |
+
+**Note:** Session tags in DSN use the format `key1`value1|key2`value2`. Use `SetSessionTag()` multiple times to add multiple tags programmatically.
 
 ## Authentication Order
 
@@ -108,6 +117,41 @@ db, err := sql.Open(drv.DriverName, conf.Stringify())
 db.Close()
 ```
 
+### Attribute-Based Access Control (ABAC) with Session Tags
+
+Use session tags to implement fine-grained access control based on attributes:
+
+```go
+conf.SetRoleArn("arn:aws:iam::123456789012:role/AthenaAccessRole")
+
+// Add session tags that can be used in IAM policies
+conf.SetSessionTag("Environment", "Production")
+conf.SetSessionTag("Team", "DataScience")
+conf.SetSessionTag("CostCenter", "CC-12345")
+conf.SetSessionTag("Project", "CustomerAnalytics")
+
+db, err := sql.Open(drv.DriverName, conf.Stringify())
+```
+
+Session tags can be used in IAM policies to control access:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "athena:*",
+    "Resource": "*",
+    "Condition": {
+      "StringEquals": {
+        "aws:PrincipalTag/Environment": "${aws:RequestTag/Environment}",
+        "aws:PrincipalTag/Team": "${aws:RequestTag/Team}"
+      }
+    }
+  }]
+}
+```
+
 ## Examples
 
 Complete working examples are available in:
@@ -117,9 +161,11 @@ Complete working examples are available in:
 
 1. **Use External IDs** - Always use external IDs for cross-account access to prevent the "confused deputy" problem
 2. **Session Names** - Use descriptive session names to help with auditing and CloudTrail logs
-3. **Least Privilege** - Configure assumed roles with minimal required permissions
-4. **Credential Management** - Never hardcode credentials; use environment variables or AWS credential providers
-5. **Session Duration** - The AWS SDK automatically handles credential refresh for long-running applications
+3. **Session Tags** - Use session tags for ABAC to enforce fine-grained access control based on user attributes
+4. **Least Privilege** - Configure assumed roles with minimal required permissions
+5. **Credential Management** - Never hardcode credentials; use environment variables or AWS credential providers
+6. **Session Duration** - The AWS SDK automatically handles credential refresh for long-running applications
+7. **Tag Validation** - Validate session tags to ensure they contain only allowed characters and values
 
 ## Troubleshooting
 

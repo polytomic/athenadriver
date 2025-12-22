@@ -70,6 +70,9 @@ var (
 	roleSessionNameEnvKey = []string{
 		"AWS_ROLE_SESSION_NAME",
 	}
+	sessionTagsEnvKey = []string{
+		"AWS_SESSION_TAGS",
+	}
 )
 
 // NewDefaultConfig is to new a Config with some default values.
@@ -559,4 +562,46 @@ func (c *Config) GetRoleSessionName() string {
 		return envVal
 	}
 	return "athenadriver-session"
+}
+
+// SetSessionTag adds a session tag for use when assuming a role.
+// Session tags are key-value pairs that you can pass when assuming a role.
+// These tags can be used for attribute-based access control (ABAC).
+func (c *Config) SetSessionTag(key, value string) {
+	tagString := c.values.Get("sessionTags")
+	if tagString == "" {
+		tagString = key + "`" + value
+	} else {
+		tagString += "|" + key + "`" + value
+	}
+	c.values.Set("sessionTags", tagString)
+}
+
+// GetSessionTags returns a map of session tags. The tags are stored in the format:
+// "key1`value1|key2`value2"
+func (c *Config) GetSessionTags() map[string]string {
+	tagString := c.values.Get("sessionTags")
+	if tagString == "" {
+		// Try environment variable
+		tagString = GetFromEnvVal(sessionTagsEnvKey)
+	}
+
+	if tagString == "" {
+		return nil
+	}
+
+	tags := make(map[string]string)
+	pairs := strings.Split(tagString, "|")
+	for _, pair := range pairs {
+		kv := strings.Split(pair, "`")
+		if len(kv) == 2 {
+			tags[kv[0]] = kv[1]
+		}
+	}
+	return tags
+}
+
+// ClearSessionTags removes all session tags
+func (c *Config) ClearSessionTags() {
+	c.values.Del("sessionTags")
 }
