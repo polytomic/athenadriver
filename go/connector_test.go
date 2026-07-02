@@ -77,7 +77,10 @@ func TestSQLConnector_Connect_NewSessionFail(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetRegion("ap-southeast-1")
 	os.Setenv("AWS_SDK_LOAD_CONFIG", "1")
-	os.Setenv("AWS_STS_REGIONAL_ENDPOINTS", "123")
+	// A nonexistent CA bundle makes config.LoadDefaultConfig fail eagerly. (In
+	// SDK v1 the equivalent trigger was an invalid AWS_STS_REGIONAL_ENDPOINTS,
+	// which v2 no longer validates at load time.)
+	os.Setenv("AWS_CA_BUNDLE", "/nonexistent/athenadriver-ca-bundle.pem")
 	connector := &SQLConnector{
 		config: testConf,
 		tracer: NewDefaultObservability(testConf),
@@ -85,7 +88,7 @@ func TestSQLConnector_Connect_NewSessionFail(t *testing.T) {
 	conn, err := connector.Connect(context.Background())
 
 	os.Unsetenv("AWS_SDK_LOAD_CONFIG")
-	os.Unsetenv("AWS_STS_REGIONAL_ENDPOINTS")
+	os.Unsetenv("AWS_CA_BUNDLE")
 	assert.NotNil(t, err)
 	assert.Nil(t, conn)
 }
@@ -119,8 +122,11 @@ func TestSQLConnector_Connect_NewSession_AWS_SDK_LOAD_CONFIG_true_AWSProfile_Set
 
 	os.Unsetenv("AWS_SDK_LOAD_CONFIG")
 	os.Unsetenv("AWS_STS_REGIONAL_ENDPOINTS")
-	assert.Nil(t, err)
-	assert.NotNil(t, conn)
+	// SDK v2 validates the shared-config profile eagerly, so selecting a profile
+	// that does not exist fails fast at Connect. (SDK v1 deferred this and
+	// returned a session, only failing later on first credential use.)
+	assert.NotNil(t, err)
+	assert.Nil(t, conn)
 }
 
 func TestSQLConnector_Connect_NewSession_AWS_SDK_LOAD_CONFIG_false(t *testing.T) {
