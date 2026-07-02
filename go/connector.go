@@ -31,14 +31,15 @@ import (
 	"github.com/uber-go/tally/v4"
 	"go.uber.org/zap"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/athena"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
 )
 
 // SQLConnector is the connector for AWS Athena Driver.
@@ -61,9 +62,9 @@ func (c *SQLConnector) Driver() driver.Driver {
 	return &SQLDriver{}
 }
 
-// Connect is to create an AWS session.
-// The order to find auth information to create session is:
-// 1. Manually set  AWS profile in Config by calling config.SetAWSProfile(profileName)
+// Connect is to create an AWS config and Athena/S3 clients.
+// The order to find auth information is:
+// 1. Manually set AWS profile in Config by calling config.SetAWSProfile(profileName)
 // 2. AWS_SDK_LOAD_CONFIG
 // 3. IAM Role Assumption with optional External ID
 // 4. Static Credentials
@@ -78,73 +79,73 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		c.tracer.SetLogger(logger)
 	}
 
-	var awsSession *session.Session
+	var cfg aws.Config
 	var err error
 	// respect AWS_SDK_LOAD_CONFIG and local ~/.aws/credentials, ~/.aws/config
 	if ok, _ := strconv.ParseBool(os.Getenv("AWS_SDK_LOAD_CONFIG")); ok {
+		// The v2 SDK always loads shared config, so this branch only needs to
+		// honor an explicitly-selected profile.
 		if profile := c.config.GetAWSProfile(); profile != "" {
-			awsSession, err = session.NewSession(&aws.Config{
-				Credentials: credentials.NewSharedCredentials("", profile),
-			})
+			cfg, err = config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(profile))
 		} else {
-			awsSession, err = session.NewSession(&aws.Config{})
+			cfg, err = config.LoadDefaultConfig(ctx)
 		}
 	} else if roleArn := c.config.GetRoleArn(); roleArn != "" {
 		// IAM Role Assumption with optional External ID
-		// First, create a base session for assuming the role
-		baseSession, err := c.createBaseSession()
+		// First, create a base config for assuming the role.
+		var baseCfg aws.Config
+		baseCfg, err = c.createBaseConfig(ctx)
 		if err != nil {
 			c.tracer.Scope().Counter(DriverName + ".failure.sqlconnector.newsession").Inc(1)
 			return nil, err
 		}
 
-		// Build AssumeRole options
-		assumeRoleFunc := func(p *stscreds.AssumeRoleProvider) {
-			p.RoleSessionName = c.config.GetRoleSessionName()
+		stsClient := sts.NewFromConfig(baseCfg)
+		provider := stscreds.NewAssumeRoleProvider(stsClient, roleArn, func(o *stscreds.AssumeRoleOptions) {
+			o.RoleSessionName = c.config.GetRoleSessionName()
 			if externalID := c.config.GetExternalID(); externalID != "" {
-				p.ExternalID = aws.String(externalID)
+				o.ExternalID = aws.String(externalID)
 			}
 			// Add session tags if configured
-			if sessionTags := c.config.GetSessionTags(); sessionTags != nil && len(sessionTags) > 0 {
+			if sessionTags := c.config.GetSessionTags(); len(sessionTags) > 0 {
 				for key, value := range sessionTags {
-					p.Tags = append(p.Tags, &sts.Tag{
+					o.Tags = append(o.Tags, ststypes.Tag{
 						Key:   aws.String(key),
 						Value: aws.String(value),
 					})
 				}
 			}
-		}
-
-		// Create credentials using AssumeRole
-		creds := stscreds.NewCredentials(baseSession, roleArn, assumeRoleFunc)
-
-		awsConfig := &aws.Config{
-			Region:      aws.String(c.config.GetRegion()),
-			Credentials: creds,
-		}
-		awsSession, err = session.NewSession(awsConfig)
-	} else if c.config.GetAccessID() != "" {
-		staticCredentials := credentials.NewStaticCredentials(c.config.GetAccessID(),
-			c.config.GetSecretAccessKey(),
-			c.config.GetSessionToken())
-		awsConfig := &aws.Config{
-			Region:      aws.String(c.config.GetRegion()),
-			Credentials: staticCredentials,
-		}
-		awsSession, err = session.NewSession(awsConfig)
-	} else {
-		awsSession, err = session.NewSession(&aws.Config{
-			Region: aws.String(c.config.GetRegion()),
 		})
+
+		// v1's stscreds.NewCredentials cached implicitly; v2's provider does
+		// not, so wrap it in a credentials cache.
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(c.config.GetRegion()),
+			config.WithCredentialsProvider(aws.NewCredentialsCache(provider)),
+		)
+	} else if c.config.GetAccessID() != "" {
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(c.config.GetRegion()),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				c.config.GetAccessID(),
+				c.config.GetSecretAccessKey(),
+				c.config.GetSessionToken(),
+			)),
+		)
+	} else {
+		// Default credential chain (environment variables, EC2 instance
+		// profile, IRSA, etc.). LoadDefaultConfig defers credential resolution
+		// to first use, so it does not error when no keys are present.
+		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(c.config.GetRegion()))
 	}
 	if err != nil {
 		c.tracer.Scope().Counter(DriverName + ".failure.sqlconnector.newsession").Inc(1)
 		return nil, err
 	}
 
-	athenaAPI := athena.New(awsSession)
-	s3API := s3.New(awsSession)
-	downloaderAPI := s3manager.NewDownloader(awsSession)
+	athenaAPI := athena.NewFromConfig(cfg)
+	s3API := s3.NewFromConfig(cfg)
+	downloaderAPI := manager.NewDownloader(s3API)
 	timeConnect := time.Since(now)
 	conn := &Connection{
 		athenaAPI: athenaAPI,
@@ -156,25 +157,22 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// createBaseSession creates a base AWS session for assuming a role.
-// This session uses credentials from either static config, environment variables, or the default credential chain.
-func (c *SQLConnector) createBaseSession() (*session.Session, error) {
+// createBaseConfig creates a base AWS config for assuming a role.
+// This config uses credentials from either static config, environment
+// variables, or the default credential chain.
+func (c *SQLConnector) createBaseConfig(ctx context.Context) (aws.Config, error) {
 	if c.config.GetAccessID() != "" {
 		// Use static credentials if provided
-		staticCredentials := credentials.NewStaticCredentials(
-			c.config.GetAccessID(),
-			c.config.GetSecretAccessKey(),
-			c.config.GetSessionToken(),
+		return config.LoadDefaultConfig(ctx,
+			config.WithRegion(c.config.GetRegion()),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				c.config.GetAccessID(),
+				c.config.GetSecretAccessKey(),
+				c.config.GetSessionToken(),
+			)),
 		)
-		awsConfig := &aws.Config{
-			Region:      aws.String(c.config.GetRegion()),
-			Credentials: staticCredentials,
-		}
-		return session.NewSession(awsConfig)
 	}
 
 	// Fall back to default credential chain (environment variables, EC2 instance profile, etc.)
-	return session.NewSession(&aws.Config{
-		Region: aws.String(c.config.GetRegion()),
-	})
+	return config.LoadDefaultConfig(ctx, config.WithRegion(c.config.GetRegion()))
 }

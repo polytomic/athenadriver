@@ -34,12 +34,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/athena"
-	"github.com/aws/aws-sdk-go/service/athena/athenaiface"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/getsentry/sentry-go"
 	"go.uber.org/zap"
 )
@@ -50,13 +48,13 @@ var (
 
 // Rows defines rows in AWS Athena ResultSet.
 type Rows struct {
-	athena          athenaiface.AthenaAPI
-	s3              s3iface.S3API
-	mgr             s3manageriface.DownloaderAPI
+	athena          athenaClient
+	s3              s3Client
+	mgr             s3DownloaderAPI
 	ctx             context.Context
 	queryID         string
 	reachedLastPage bool
-	QueryExecution  *athena.QueryExecution
+	QueryExecution  *types.QueryExecution
 	ResultOutput    *athena.GetQueryResultsOutput
 	config          *Config
 	tracer          *DriverTracer
@@ -72,7 +70,7 @@ type Rows struct {
 }
 
 // NewNonOpsRows is to create a new Rows.
-func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, s3mgr s3manageriface.DownloaderAPI, queryID string, driverConfig *Config,
+func NewNonOpsRows(ctx context.Context, athenaAPI athenaClient, s3 s3Client, s3mgr s3DownloaderAPI, queryID string, driverConfig *Config,
 	obs *DriverTracer) (*Rows, error) {
 	r := Rows{
 		athena:    athenaAPI,
@@ -88,7 +86,7 @@ func NewNonOpsRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3if
 }
 
 // NewRows is to create a new Rows.
-func NewRows(ctx context.Context, athenaAPI athenaiface.AthenaAPI, s3 s3iface.S3API, s3mgr s3manageriface.DownloaderAPI, queryID string, driverConfig *Config,
+func NewRows(ctx context.Context, athenaAPI athenaClient, s3 s3Client, s3mgr s3DownloaderAPI, queryID string, driverConfig *Config,
 	obs *DriverTracer) (*Rows, error) {
 	r := Rows{
 		athena:    athenaAPI,
@@ -176,7 +174,7 @@ func (r *Rows) openResults() error {
 		return err
 	}
 
-	resp, err := r.s3.GetObjectWithContext(
+	resp, err := r.s3.GetObject(
 		ctx,
 		&s3.GetObjectInput{
 			Bucket: aws.String(resultLocation.Host),
@@ -197,7 +195,7 @@ func (r *Rows) openResults() error {
 			return
 		}
 		defer scratchFile.Close()
-		_, err = r.mgr.DownloadWithContext(ctx,
+		_, err = r.mgr.Download(ctx,
 			scratchFile,
 			&s3.GetObjectInput{
 				Bucket: aws.String(resultLocation.Host),
@@ -243,8 +241,8 @@ func (r *Rows) openResults() error {
 	return nil
 }
 
-func (r *Rows) FetchRuntimeStatistics() (*athena.QueryRuntimeStatistics, error) {
-	resp, err := r.athena.GetQueryRuntimeStatisticsWithContext(
+func (r *Rows) FetchRuntimeStatistics() (*types.QueryRuntimeStatistics, error) {
+	resp, err := r.athena.GetQueryRuntimeStatistics(
 		r.ctx,
 		&athena.GetQueryRuntimeStatisticsInput{
 			QueryExecutionId: aws.String(r.queryID),
@@ -258,7 +256,7 @@ func (r *Rows) FetchRuntimeStatistics() (*athena.QueryRuntimeStatistics, error) 
 
 func (r *Rows) fetchQueryExecution() error {
 	input := &athena.GetQueryExecutionInput{QueryExecutionId: aws.String(r.queryID)}
-	exec, err := r.athena.GetQueryExecutionWithContext(r.ctx, input)
+	exec, err := r.athena.GetQueryExecution(r.ctx, input)
 	if err != nil {
 		return err
 	}
@@ -274,7 +272,7 @@ func (r *Rows) fetchNextPage() error {
 		QueryExecutionId: aws.String(r.queryID),
 	}
 
-	r.ResultOutput, err = r.athena.GetQueryResultsWithContext(r.ctx, resultsInput)
+	r.ResultOutput, err = r.athena.GetQueryResults(r.ctx, resultsInput)
 	if err != nil {
 		r.tracer.Scope().Counter(DriverName + ".failure.fetchnextpage.getqueryresults").Inc(1)
 		r.tracer.Log(ErrorLevel, "GetQueryResults failed", zap.String("error", err.Error()))
@@ -325,9 +323,9 @@ func (r *Rows) fetchNextPage() error {
 				if *r.ResultOutput.ResultSet.ResultSetMetadata.ColumnInfo[0].Name == "rows" {
 					// For DML's INSERT INTO, DDL's CTAS
 					updateCount := strconv.FormatInt(*r.ResultOutput.UpdateCount, 10)
-					rData := athena.Datum{VarCharValue: &updateCount}
-					aRow := athena.Row{Data: []*athena.Datum{&rData}}
-					r.ResultOutput.ResultSet.Rows = append(r.ResultOutput.ResultSet.Rows, &aRow)
+					rData := types.Datum{VarCharValue: &updateCount}
+					aRow := types.Row{Data: []types.Datum{rData}}
+					r.ResultOutput.ResultSet.Rows = append(r.ResultOutput.ResultSet.Rows, aRow)
 				}
 			}
 		}
@@ -339,7 +337,7 @@ func (r *Rows) fetchNextPage() error {
 		i := 0
 		if len(ci) > 0 && len(rs.Rows) > 0 && len(rs.Rows[0].Data) > 0 && len(rs.Rows[0].Data) == len(ci) {
 			for ; i < len(ci); i++ {
-				if rs.Rows[0].Data[i] == nil || rs.Rows[0].Data[i].VarCharValue == nil {
+				if rs.Rows[0].Data[i].VarCharValue == nil {
 					break
 				}
 				if *ci[i].Name != *rs.Rows[0].Data[i].VarCharValue {
@@ -385,12 +383,9 @@ func (r *Rows) Close() (err error) {
 }
 
 // convertRow is to convert data from Athena type to Golang SQL type and put them into an array of driver.Value.
-func (r *Rows) convertRow(columns []*athena.ColumnInfo, rdata []*athena.Datum, ret []driver.Value,
+func (r *Rows) convertRow(columns []types.ColumnInfo, rdata []types.Datum, ret []driver.Value,
 	driverConfig *Config) error {
 	for i, val := range rdata {
-		if val == nil {
-			return ErrAthenaNilDatum
-		}
 		value, err := r.athenaTypeToGoType(columns[i], val.VarCharValue, driverConfig)
 		if err != nil {
 			r.tracer.Log(ErrorLevel, "convertrow failed", zap.String("error", err.Error()))
@@ -408,7 +403,7 @@ func (r *Rows) convertRow(columns []*athena.ColumnInfo, rdata []*athena.Datum, r
 }
 
 // convertRow is to convert data from Athena type to Golang SQL type and put them into an array of driver.Value.
-func (r *Rows) convertRecord(columns []*athena.ColumnInfo, rdata []string, ret []driver.Value,
+func (r *Rows) convertRecord(columns []types.ColumnInfo, rdata []string, ret []driver.Value,
 	driverConfig *Config) error {
 	for i, val := range rdata {
 		v := &val
@@ -441,7 +436,7 @@ func (r *Rows) convertRecord(columns []*athena.ColumnInfo, rdata []string, ret [
 // json is also undocumented above, but appears here https://docs.aws.amazon.com/athena/latest/ug/querying-JSON.html
 // The full list is here: https://prestodb.io/docs/0.172/language/types.html
 // Include ipaddress for forward compatibility.
-func (r *Rows) athenaTypeToGoType(columnInfo *athena.ColumnInfo, rawValue *string, driverConfig *Config) (interface{}, error) {
+func (r *Rows) athenaTypeToGoType(columnInfo types.ColumnInfo, rawValue *string, driverConfig *Config) (interface{}, error) {
 	if maskedValue, masked := driverConfig.CheckColumnMasked(*columnInfo.Name); masked { // "comma ok" idiom
 		return maskedValue, nil
 	}
@@ -460,7 +455,7 @@ func (r *Rows) athenaTypeToGoType(columnInfo *athena.ColumnInfo, rawValue *strin
 		}
 		r.tracer.Scope().Counter(DriverName + ".failure.convertvalue.config").Inc(1)
 		r.tracer.Log(ErrorLevel, "missing data", zap.String("columnInfo.Name", *columnInfo.Name))
-		return nil, fmt.Errorf("Missing data at column " + *columnInfo.Name)
+		return nil, fmt.Errorf("Missing data at column %s", *columnInfo.Name)
 	}
 	val := *rawValue
 	// https://stackoverflow.com/questions/30299649/parse-string-to-specific-type-of-int-int8-int16-int32-int64

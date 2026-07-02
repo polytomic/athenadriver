@@ -20,27 +20,27 @@
 
 package athenadriver
 
-import "github.com/aws/aws-sdk-go/service/athena"
+import "github.com/aws/aws-sdk-go-v2/service/athena/types"
 
-// WGTags is a wrapper of []*athena.Tag.
+// WGTags is a wrapper of []types.Tag.
 type WGTags struct {
-	tags []*athena.Tag
+	tags []types.Tag
 }
 
 // NewWGTags is to create a new WGTags.
 func NewWGTags() *WGTags {
-	return &WGTags{tags: make([]*athena.Tag, 0, 2)}
+	return &WGTags{tags: make([]types.Tag, 0, 2)}
 }
 
 // AddTag is to add tag.
 func (t *WGTags) AddTag(k string, v string) {
-	t.tags = append(t.tags, &athena.Tag{
+	t.tags = append(t.tags, types.Tag{
 		Key:   &k,
 		Value: &v})
 }
 
 // Get is a getter.
-func (t *WGTags) Get() []*athena.Tag {
+func (t *WGTags) Get() []types.Tag {
 	if t == nil {
 		return nil
 	}

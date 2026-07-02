@@ -254,7 +254,7 @@ func (c *Config) SetWorkGroup(w *Workgroup) error {
 	if w.Config == nil {
 		w.Config = GetDefaultWGConfig()
 	}
-	c.values.Set("workgroupConfig", w.Config.String())
+	c.values.Set("workgroupConfig", wgConfigString(w.Config))
 	return nil
 }
 
