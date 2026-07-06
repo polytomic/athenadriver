@@ -118,20 +118,26 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		})
 
 		// v1's stscreds.NewCredentials cached implicitly; v2's provider does
-		// not, so wrap it in a credentials cache.
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(c.config.GetRegion()),
-			config.WithCredentialsProvider(aws.NewCredentialsCache(provider)),
-		)
+		// not, so wrap it in a credentials cache. Build the config directly
+		// rather than via LoadDefaultConfig so an unrelated AWS_PROFILE in the
+		// environment cannot fail an explicit-credential connection.
+		cfg = aws.Config{
+			Region:      c.config.GetRegion(),
+			Credentials: aws.NewCredentialsCache(provider),
+		}
 	} else if c.config.GetAccessID() != "" {
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(c.config.GetRegion()),
-			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+		// Build the config directly from the DSN's static credentials so a
+		// missing/absent AWS_PROFILE in the environment does not break an
+		// otherwise self-contained connection (LoadDefaultConfig parses shared
+		// config before honoring WithCredentialsProvider).
+		cfg = aws.Config{
+			Region: c.config.GetRegion(),
+			Credentials: credentials.NewStaticCredentialsProvider(
 				c.config.GetAccessID(),
 				c.config.GetSecretAccessKey(),
 				c.config.GetSessionToken(),
-			)),
-		)
+			),
+		}
 	} else {
 		// Default credential chain (environment variables, EC2 instance
 		// profile, IRSA, etc.). LoadDefaultConfig defers credential resolution
@@ -162,15 +168,17 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 // variables, or the default credential chain.
 func (c *SQLConnector) createBaseConfig(ctx context.Context) (aws.Config, error) {
 	if c.config.GetAccessID() != "" {
-		// Use static credentials if provided
-		return config.LoadDefaultConfig(ctx,
-			config.WithRegion(c.config.GetRegion()),
-			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+		// Use static credentials if provided. Build the config directly rather
+		// than via LoadDefaultConfig so an unrelated AWS_PROFILE in the
+		// environment cannot fail an explicit-credential connection.
+		return aws.Config{
+			Region: c.config.GetRegion(),
+			Credentials: credentials.NewStaticCredentialsProvider(
 				c.config.GetAccessID(),
 				c.config.GetSecretAccessKey(),
 				c.config.GetSessionToken(),
-			)),
-		)
+			),
+		}, nil
 	}
 
 	// Fall back to default credential chain (environment variables, EC2 instance profile, etc.)

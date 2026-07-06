@@ -161,6 +161,51 @@ func TestSQLConnector_Connect_NewSession_Credentials(t *testing.T) {
 	assert.NotNil(t, conn)
 }
 
+// TestSQLConnector_Connect_Credentials_IgnoresAmbientProfile is a regression
+// test for the SDK v2 migration: an explicit static-credential connection must
+// not fail merely because AWS_PROFILE points at a profile that does not exist.
+// Building the config via LoadDefaultConfig parsed shared config first and
+// returned SharedConfigProfileNotExistError before honoring the supplied
+// credentials; building aws.Config directly avoids that.
+func TestSQLConnector_Connect_Credentials_IgnoresAmbientProfile(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	_ = testConf.SetAccessID("testid")
+	_ = testConf.SetSecretAccessKey("testkey")
+	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	conn, err := connector.Connect(context.Background())
+
+	os.Unsetenv("AWS_PROFILE")
+	assert.Nil(t, err)
+	assert.NotNil(t, conn)
+}
+
+// TestSQLConnector_Connect_AssumeRole_IgnoresAmbientProfile mirrors the above
+// for the assume-role path when explicit base credentials are supplied.
+func TestSQLConnector_Connect_AssumeRole_IgnoresAmbientProfile(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	_ = testConf.SetAccessID("testid")
+	_ = testConf.SetSecretAccessKey("testkey")
+	testConf.SetRoleArn("arn:aws:iam::123456789012:role/athenadriver-regression")
+	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	conn, err := connector.Connect(context.Background())
+
+	os.Unsetenv("AWS_PROFILE")
+	assert.Nil(t, err)
+	assert.NotNil(t, conn)
+}
+
 func TestSQLConnector_Driver(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	connector := &SQLConnector{
