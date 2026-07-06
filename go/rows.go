@@ -185,12 +185,19 @@ func (r *Rows) openResults() error {
 		return err
 	}
 
+	// Resolve the scratch filename before spawning the goroutine: r.config is
+	// not safe for concurrent use, and r.resultsFilename is read by Close. Both
+	// are touched here, while we still hold r.rmu.
+	if scratchDir := r.config.GetScratchDir(); scratchDir != "" {
+		r.resultsFilename = filepath.Join(scratchDir, r.queryID)
+	}
+	resultsFilename := r.resultsFilename
+
 	go func() {
-		if r.config.GetScratchDir() == "" {
+		if resultsFilename == "" {
 			return
 		}
-		r.resultsFilename = filepath.Join(r.config.GetScratchDir(), r.queryID)
-		scratchFile, err := os.Create(r.resultsFilename)
+		scratchFile, err := os.Create(resultsFilename)
 		if err != nil {
 			return
 		}
@@ -205,7 +212,7 @@ func (r *Rows) openResults() error {
 		if err != nil {
 			return
 		}
-		bufferedFile, err := os.Open(r.resultsFilename)
+		bufferedFile, err := os.Open(resultsFilename)
 		if err != nil {
 			return
 		}
@@ -372,6 +379,10 @@ func (r *Rows) Close() (err error) {
 		r.tracer.Log(WarnLevel, "rows close prematurely, queryID: "+r.queryID)
 		r.ResultOutput = nil
 	}
+	// The download goroutine in openResults swaps r.resultsFile under r.rmu;
+	// take it here so we close the reader that is actually active.
+	r.rmu.Lock()
+	defer r.rmu.Unlock()
 	if r.resultsFile != nil {
 		r.resultsFile.Close()
 		r.results = nil
