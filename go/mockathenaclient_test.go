@@ -350,13 +350,29 @@ func (m *mockS3Client) GetObject(ctx context.Context, in *s3.GetObjectInput,
 	return nil, ErrTestMockGeneric
 }
 
-// mockDownloader is a no-op downloader; the scratch-dir download path is only
-// exercised when a scratch dir is configured, which these tests do not do.
+// mockDownloader serves the same csvFixtures registry as mockS3Client. It must
+// actually write the fixture: GetScratchDir falls back to os.TempDir, so the
+// background download in openResults runs in every test, and its result
+// replaces the active CSV reader mid-read. A no-op "success" here would swap in
+// an empty file and truncate result sets depending on goroutine scheduling.
 type mockDownloader struct{}
 
 func (m *mockDownloader) Download(ctx context.Context, w io.WriterAt, in *s3.GetObjectInput,
 	_ ...func(*manager.Downloader)) (int64, error) {
-	return 0, nil
+	key := ""
+	if in.Key != nil {
+		key = *in.Key
+	}
+	f, ok := csvFixtures[key]
+	if !ok {
+		return 0, ErrTestMockGeneric
+	}
+	body, err := io.ReadAll(f())
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.WriteAt(body, 0)
+	return int64(n), err
 }
 
 // errAfterReader serves data then returns err once drained, letting tests
