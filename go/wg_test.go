@@ -64,6 +64,35 @@ func TestWGConfigStringResultConfiguration(t *testing.T) {
 	assert.Equal(t, expected, wgConfigString(conf))
 }
 
+// TestWGConfigStringExtraFields exercises fields the driver's own constructors
+// never populate (AdditionalConfiguration, EngineVersion, ExecutionRole). The
+// SDK v1 String() rendered every populated field, so callers that build a
+// WorkGroupConfiguration by hand must still see them in the serialized DSN.
+func TestWGConfigStringExtraFields(t *testing.T) {
+	var bytesScannedCutoffPerQuery int64 = DefaultBytesScannedCutoffPerQuery
+	conf := &types.WorkGroupConfiguration{
+		AdditionalConfiguration:         aws.String("some-notebook-config"),
+		BytesScannedCutoffPerQuery:      &bytesScannedCutoffPerQuery,
+		EnforceWorkGroupConfiguration:   aws.Bool(true),
+		EngineVersion:                   &types.EngineVersion{SelectedEngineVersion: aws.String("Athena engine version 3")},
+		ExecutionRole:                   aws.String("arn:aws:iam::123456789012:role/AthenaSpark"),
+		PublishCloudWatchMetricsEnabled: aws.Bool(true),
+		RequesterPaysEnabled:            aws.Bool(false),
+	}
+	expected := `{
+  AdditionalConfiguration: "some-notebook-config",
+  BytesScannedCutoffPerQuery: 1073741824,
+  EnforceWorkGroupConfiguration: true,
+  EngineVersion: {
+    SelectedEngineVersion: "Athena engine version 3"
+  },
+  ExecutionRole: "arn:aws:iam::123456789012:role/AthenaSpark",
+  PublishCloudWatchMetricsEnabled: true,
+  RequesterPaysEnabled: false
+}`
+	assert.Equal(t, expected, wgConfigString(conf))
+}
+
 func TestGetWG(t *testing.T) {
 	w, e := getWG(context.Background(), nil, "SELECT_OK")
 	assert.Nil(t, w)

@@ -22,6 +22,7 @@ package athenadriver
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
@@ -33,63 +34,74 @@ type WGConfig struct {
 }
 
 // wgConfigString renders a WorkGroupConfiguration in the same human-readable
-// form the AWS SDK for Go v1 produced via (*WorkGroupConfiguration).String().
-// The v2 types drop the generated String() method, so we reproduce it here to
-// keep the driver's DSN representation stable across the SDK migration. Only the
-// fields GetDefaultWGConfig / NewWGConfig ever populate are rendered, in the SDK
-// field order, matching v1's awsutil.Prettify output: nil fields omitted,
-// strings quoted, nested structs indented two more spaces.
+// form the AWS SDK for Go v1 produced via (*WorkGroupConfiguration).String(),
+// which delegated to awsutil.Prettify. The v2 types drop the generated String()
+// method, so we reimplement Prettify's reflection walk here to keep the driver's
+// DSN representation stable across the SDK migration. Every populated field is
+// rendered — not a fixed whitelist — so configurations that set fields such as
+// AdditionalConfiguration, EngineVersion, or ExecutionRole retain their
+// serialized representation, matching v1: fields walked in struct-declaration
+// order, unset fields omitted, strings quoted, nested structs indented two more
+// spaces.
 func wgConfigString(c *types.WorkGroupConfiguration) string {
 	if c == nil {
 		return "{\n\n}"
 	}
-	var lines []string
-	if c.BytesScannedCutoffPerQuery != nil {
-		lines = append(lines, fmt.Sprintf("  BytesScannedCutoffPerQuery: %d", *c.BytesScannedCutoffPerQuery))
-	}
-	if c.EnforceWorkGroupConfiguration != nil {
-		lines = append(lines, fmt.Sprintf("  EnforceWorkGroupConfiguration: %t", *c.EnforceWorkGroupConfiguration))
-	}
-	if c.PublishCloudWatchMetricsEnabled != nil {
-		lines = append(lines, fmt.Sprintf("  PublishCloudWatchMetricsEnabled: %t", *c.PublishCloudWatchMetricsEnabled))
-	}
-	if c.RequesterPaysEnabled != nil {
-		lines = append(lines, fmt.Sprintf("  RequesterPaysEnabled: %t", *c.RequesterPaysEnabled))
-	}
-	if c.ResultConfiguration != nil {
-		lines = append(lines, "  ResultConfiguration: "+resultConfigString(c.ResultConfiguration, 2))
-	}
-	return "{\n" + strings.Join(lines, ",\n") + "\n}"
+	var buf strings.Builder
+	prettifyWGConfig(reflect.ValueOf(c), 0, &buf)
+	return buf.String()
 }
 
-// resultConfigString renders a ResultConfiguration as v1's awsutil.Prettify
-// did, starting at the given indent (the indent of the "ResultConfiguration:"
-// label it follows).
-func resultConfigString(rc *types.ResultConfiguration, indent int) string {
-	pad := strings.Repeat(" ", indent+2)
-	var lines []string
-	if rc.AclConfiguration != nil && rc.AclConfiguration.S3AclOption != "" {
-		lines = append(lines, fmt.Sprintf("%sAclConfiguration: {\n%s  S3AclOption: %q\n%s}",
-			pad, pad, string(rc.AclConfiguration.S3AclOption), pad))
+// prettifyWGConfig reproduces the subset of
+// github.com/aws/aws-sdk-go/aws/awsutil.Prettify that the workgroup
+// configuration types exercise: structs, pointers, and scalar fields (no slices
+// or maps appear in WorkGroupConfiguration, so those fall through to %v).
+//
+// Two adjustments preserve v1 parity against v2's regenerated types: v1 modeled
+// string enums (EncryptionOption, S3AclOption, AuthenticationType, ...) as
+// *string, whereas v2 models them as named string values. So an empty enum is
+// treated as unset and omitted — matching a nil *string in v1 — and non-empty
+// enums are quoted exactly as v1's *string fields were.
+func prettifyWGConfig(v reflect.Value, indent int, buf *strings.Builder) {
+	for v.Kind() == reflect.Ptr {
+		v = v.Elem()
 	}
-	if ec := rc.EncryptionConfiguration; ec != nil {
-		var enc []string
-		if ec.EncryptionOption != "" {
-			enc = append(enc, fmt.Sprintf("%s  EncryptionOption: %q", pad, string(ec.EncryptionOption)))
+	switch v.Kind() {
+	case reflect.Struct:
+		buf.WriteString("{\n")
+		pad := strings.Repeat(" ", indent+2)
+		first := true
+		for i := 0; i < v.Type().NumField(); i++ {
+			ft := v.Type().Field(i)
+			f := v.Field(i)
+			if !ft.IsExported() {
+				continue
+			}
+			if (f.Kind() == reflect.Ptr || f.Kind() == reflect.Slice || f.Kind() == reflect.Map) && f.IsNil() {
+				continue
+			}
+			// Empty named-string enums are the zero value and, like a nil
+			// *string in v1, are treated as unset.
+			if f.Kind() == reflect.String && f.Len() == 0 {
+				continue
+			}
+			if !first {
+				buf.WriteString(",\n")
+			}
+			first = false
+			buf.WriteString(pad)
+			buf.WriteString(ft.Name)
+			buf.WriteString(": ")
+			prettifyWGConfig(f, indent+2, buf)
 		}
-		if ec.KmsKey != nil {
-			enc = append(enc, fmt.Sprintf("%s  KmsKey: %q", pad, *ec.KmsKey))
-		}
-		lines = append(lines, fmt.Sprintf("%sEncryptionConfiguration: {\n%s\n%s}",
-			pad, strings.Join(enc, ",\n"), pad))
+		buf.WriteString("\n")
+		buf.WriteString(strings.Repeat(" ", indent))
+		buf.WriteString("}")
+	case reflect.String:
+		fmt.Fprintf(buf, "%q", v.String())
+	default:
+		fmt.Fprintf(buf, "%v", v.Interface())
 	}
-	if rc.ExpectedBucketOwner != nil {
-		lines = append(lines, fmt.Sprintf("%sExpectedBucketOwner: %q", pad, *rc.ExpectedBucketOwner))
-	}
-	if rc.OutputLocation != nil {
-		lines = append(lines, fmt.Sprintf("%sOutputLocation: %q", pad, *rc.OutputLocation))
-	}
-	return "{\n" + strings.Join(lines, ",\n") + "\n" + strings.Repeat(" ", indent) + "}"
 }
 
 // GetDefaultWGConfig to create a default WorkGroupConfiguration.
