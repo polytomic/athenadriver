@@ -37,7 +37,8 @@ type WGConfig struct {
 // The v2 types drop the generated String() method, so we reproduce it here to
 // keep the driver's DSN representation stable across the SDK migration. Only the
 // fields GetDefaultWGConfig / NewWGConfig ever populate are rendered, in the SDK
-// field order, matching v1's awsutil.Prettify output.
+// field order, matching v1's awsutil.Prettify output: nil fields omitted,
+// strings quoted, nested structs indented two more spaces.
 func wgConfigString(c *types.WorkGroupConfiguration) string {
 	if c == nil {
 		return "{\n\n}"
@@ -55,7 +56,40 @@ func wgConfigString(c *types.WorkGroupConfiguration) string {
 	if c.RequesterPaysEnabled != nil {
 		lines = append(lines, fmt.Sprintf("  RequesterPaysEnabled: %t", *c.RequesterPaysEnabled))
 	}
+	if c.ResultConfiguration != nil {
+		lines = append(lines, "  ResultConfiguration: "+resultConfigString(c.ResultConfiguration, 2))
+	}
 	return "{\n" + strings.Join(lines, ",\n") + "\n}"
+}
+
+// resultConfigString renders a ResultConfiguration as v1's awsutil.Prettify
+// did, starting at the given indent (the indent of the "ResultConfiguration:"
+// label it follows).
+func resultConfigString(rc *types.ResultConfiguration, indent int) string {
+	pad := strings.Repeat(" ", indent+2)
+	var lines []string
+	if rc.AclConfiguration != nil && rc.AclConfiguration.S3AclOption != "" {
+		lines = append(lines, fmt.Sprintf("%sAclConfiguration: {\n%s  S3AclOption: %q\n%s}",
+			pad, pad, string(rc.AclConfiguration.S3AclOption), pad))
+	}
+	if ec := rc.EncryptionConfiguration; ec != nil {
+		var enc []string
+		if ec.EncryptionOption != "" {
+			enc = append(enc, fmt.Sprintf("%s  EncryptionOption: %q", pad, string(ec.EncryptionOption)))
+		}
+		if ec.KmsKey != nil {
+			enc = append(enc, fmt.Sprintf("%s  KmsKey: %q", pad, *ec.KmsKey))
+		}
+		lines = append(lines, fmt.Sprintf("%sEncryptionConfiguration: {\n%s\n%s}",
+			pad, strings.Join(enc, ",\n"), pad))
+	}
+	if rc.ExpectedBucketOwner != nil {
+		lines = append(lines, fmt.Sprintf("%sExpectedBucketOwner: %q", pad, *rc.ExpectedBucketOwner))
+	}
+	if rc.OutputLocation != nil {
+		lines = append(lines, fmt.Sprintf("%sOutputLocation: %q", pad, *rc.OutputLocation))
+	}
+	return "{\n" + strings.Join(lines, ",\n") + "\n" + strings.Repeat(" ", indent) + "}"
 }
 
 // GetDefaultWGConfig to create a default WorkGroupConfiguration.

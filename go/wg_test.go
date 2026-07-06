@@ -24,6 +24,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,6 +37,31 @@ func TestNewWG(t *testing.T) {
 	wg := NewWG("henry_wu", nil, wgTags)
 	assert.Equal(t, wg.Name, "henry_wu")
 	assert.Equal(t, len(wg.Tags.Get()), 3)
+}
+
+func TestWGConfigStringResultConfiguration(t *testing.T) {
+	conf := NewWGConfig(DefaultBytesScannedCutoffPerQuery, true, true, false,
+		&types.ResultConfiguration{
+			EncryptionConfiguration: &types.EncryptionConfiguration{
+				EncryptionOption: types.EncryptionOptionSseKms,
+				KmsKey:           aws.String("arn:aws:kms:us-east-1:123456789012:key/abc"),
+			},
+			OutputLocation: aws.String("s3://query-results-henry-wu-us-east-2/"),
+		})
+	expected := `{
+  BytesScannedCutoffPerQuery: 1073741824,
+  EnforceWorkGroupConfiguration: true,
+  PublishCloudWatchMetricsEnabled: true,
+  RequesterPaysEnabled: false,
+  ResultConfiguration: {
+    EncryptionConfiguration: {
+      EncryptionOption: "SSE_KMS",
+      KmsKey: "arn:aws:kms:us-east-1:123456789012:key/abc"
+    },
+    OutputLocation: "s3://query-results-henry-wu-us-east-2/"
+  }
+}`
+	assert.Equal(t, expected, wgConfigString(conf))
 }
 
 func TestGetWG(t *testing.T) {
