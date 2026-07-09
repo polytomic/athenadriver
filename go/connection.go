@@ -426,7 +426,7 @@ func (c *Connection) QueryContext(ctx context.Context, query string, namedArgs [
 	if err != nil {
 		if pseudoCommand == PCGetQID {
 			var respErr *awshttp.ResponseError
-			if errors.As(err, &respErr) {
+			if errors.As(err, &respErr) && respErr.ServiceRequestID() != "" {
 				return c.getHeaderlessSingleRowResultPage(ctx, respErr.ServiceRequestID())
 			}
 		}
