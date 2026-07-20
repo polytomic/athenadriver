@@ -339,13 +339,17 @@ func (c *SQLConnector) createBaseConfig(ctx context.Context) (aws.Config, error)
 // profile defined only in ~/.aws/config (the common local/CLI setup) would then
 // fail the strict load, breaking a configuration that works today. So the load
 // is attempted normally first -- honoring a genuinely-present profile and any
-// settings it carries -- and only if that fails is it retried with the shared
-// files removed, so ambient shared configuration cannot block a connection whose
-// credentials are meant to come from the environment or an instance/container
-// role. The SDK's own chain resolution (and its container-endpoint host checks)
-// is used in both attempts. Explicit credentials take a different path
-// (configFromEnv) that ignores the shared files entirely, since there the DSN
-// already supplied the credentials.
+// settings it carries -- and only if that fails is it retried with the malformed
+// ~/.aws/config removed, so ambient shared configuration cannot block a
+// connection whose credentials are meant to come from the environment or an
+// instance/container role. The ~/.aws/credentials file is deliberately kept on
+// the retry: under v1 (AWS_SDK_LOAD_CONFIG unset) that file was still read even
+// though ~/.aws/config was ignored, so a valid default or AWS_PROFILE entry
+// living only in ~/.aws/credentials must keep authenticating. The SDK's own
+// chain resolution (and its container-endpoint host checks) is used in both
+// attempts. Explicit credentials take a different path (configFromEnv) that
+// ignores the shared files entirely, since there the DSN already supplied the
+// credentials.
 func (c *SQLConnector) loadDefaultChainConfig(ctx context.Context) (aws.Config, error) {
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(c.config.GetRegion()))
 	if err == nil {
@@ -353,19 +357,21 @@ func (c *SQLConnector) loadDefaultChainConfig(ctx context.Context) (aws.Config, 
 	}
 
 	// The initial load failed. If credentials are available from the
-	// environment or an instance/container role, the failure came from parsing
-	// the shared files, not from the chain itself -- retry without them. The
-	// original error is returned if this fallback also fails, since it saw the
-	// real files and is the more informative of the two.
+	// environment, an instance/container role, or ~/.aws/credentials, the
+	// failure came from parsing ~/.aws/config, not from the chain itself --
+	// retry with only that file suppressed. ~/.aws/credentials is left in place
+	// so a valid default or AWS_PROFILE entry there still resolves, matching the
+	// v1 behavior. The original error is returned if this fallback also fails,
+	// since it saw the real files and is the more informative of the two.
 	//
 	// A profile the caller explicitly selected via AWS_PROFILE that resolves in
-	// neither shared file is not recoverable here: the strict loader still fails
-	// on the retry, and that is intentional -- an unresolvable explicit selection
-	// is a real misconfiguration, not the ambient noise this guards against.
+	// neither the environment nor ~/.aws/credentials is not recoverable here:
+	// the strict loader still fails on the retry, and that is intentional -- an
+	// unresolvable explicit selection is a real misconfiguration, not the
+	// ambient noise this guards against.
 	cfg, fallbackErr := config.LoadDefaultConfig(ctx,
 		config.WithRegion(c.config.GetRegion()),
 		config.WithSharedConfigFiles([]string{}),
-		config.WithSharedCredentialsFiles([]string{}),
 	)
 	if fallbackErr != nil {
 		return aws.Config{}, err
