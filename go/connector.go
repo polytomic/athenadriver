@@ -22,8 +22,12 @@ package athenadriver
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql/driver"
 	"errors"
+	"fmt"
+	"net/http"
 
 	"os"
 	"strconv"
@@ -33,6 +37,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
@@ -41,6 +46,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
+	"github.com/aws/smithy-go/logging"
 )
 
 // SQLConnector is the connector for AWS Athena Driver.
@@ -154,37 +160,143 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 
 // loadConfigWithCredentials builds an aws.Config that uses the supplied
 // explicit credentials while retaining the SDK's resolved environment
-// settings -- notably AWS_CA_BUNDLE, the client TLS cert/key pair, and the
-// FIPS/dualstack endpoint toggles, all of which v1's session.NewSession
-// applied regardless of AWS_SDK_LOAD_CONFIG.
+// settings -- notably AWS_CA_BUNDLE and the FIPS/dualstack endpoint toggles,
+// both of which v1's session.NewSession applied regardless of
+// AWS_SDK_LOAD_CONFIG.
 //
-// LoadDefaultConfig parses shared config before honoring
-// WithCredentialsProvider, so an unrelated AWS_PROFILE pointing at an absent
-// profile would otherwise fail an entirely self-contained connection. That
-// particular failure is not meaningful here -- the caller supplied the
-// credentials, so no profile is needed -- so retry pinned to the default
-// profile, which the SDK tolerates being absent. Explicitly-supplied region
-// and credentials still take precedence over anything a default profile
-// defines, and the retry keeps the resolved environment settings that a bare
-// aws.Config literal would discard. Any other load error is real and is
-// returned.
+// LoadDefaultConfig parses the ambient shared profile before it honors
+// WithCredentialsProvider, and it parses it strictly whenever AWS_PROFILE is
+// set -- see resolveConfigLoaders in the config package, which only tolerates
+// a missing profile when AWS_PROFILE is empty. A profile that is absent,
+// malformed, or merely incomplete (credential_source without role_arn, say)
+// therefore fails a connection that supplied its own credentials and needs no
+// profile at all. No LoadOptions setting relaxes this: the shared config
+// loader runs before any option is consulted, so pinning the profile or
+// emptying the file list does not help, and neither can the fallback go
+// through LoadDefaultConfig.
+//
+// So when a load failure is attributable to the shared configuration, rebuild
+// from the environment alone, which does no profile parsing. Genuine
+// environment errors -- an unreadable or malformed AWS_CA_BUNDLE, an invalid
+// AWS_USE_FIPS_ENDPOINT -- still surface, from either attempt.
 func (c *SQLConnector) loadConfigWithCredentials(ctx context.Context, creds aws.CredentialsProvider) (aws.Config, error) {
-	opts := []func(*config.LoadOptions) error{
+	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(c.config.GetRegion()),
 		config.WithCredentialsProvider(creds),
-	}
-
-	cfg, err := config.LoadDefaultConfig(ctx, opts...)
+	)
 	if err == nil {
 		return cfg, nil
 	}
-
-	var profileErr config.SharedConfigProfileNotExistError
-	if errors.As(err, &profileErr) {
-		return config.LoadDefaultConfig(ctx, append(opts,
-			config.WithSharedConfigProfile("default"))...)
+	if !sharedConfigIsAtFault(ctx) {
+		return aws.Config{}, err
 	}
-	return aws.Config{}, err
+	return c.configFromEnv(creds)
+}
+
+// sharedConfigIsAtFault reports whether the ambient shared configuration is
+// itself unloadable, and so is the likely cause of a LoadDefaultConfig
+// failure. Attributing by behavior rather than by error type is deliberate:
+// several shared-config validation failures are bare fmt.Errorf values with
+// no type to match on.
+//
+// A profile that simply does not exist counts only when AWS_PROFILE named it.
+// With AWS_PROFILE unset the SDK already tolerates an absent default profile,
+// so a load failure in that case came from somewhere else and must not be
+// swallowed.
+func sharedConfigIsAtFault(ctx context.Context) bool {
+	envCfg, err := config.NewEnvConfig()
+	if err != nil {
+		return false
+	}
+
+	profile := envCfg.SharedConfigProfile
+	named := profile != ""
+	if !named {
+		profile = config.DefaultSharedConfigProfile
+	}
+
+	// LoadSharedConfigProfile defaults to ~/.aws/{config,credentials} and does
+	// not consult AWS_CONFIG_FILE or AWS_SHARED_CREDENTIALS_FILE itself, so
+	// point it at the same files LoadDefaultConfig just used.
+	_, err = config.LoadSharedConfigProfile(ctx, profile, func(o *config.LoadSharedConfigOptions) {
+		if envCfg.SharedConfigFile != "" {
+			o.ConfigFiles = []string{envCfg.SharedConfigFile}
+		}
+		if envCfg.SharedCredentialsFile != "" {
+			o.CredentialsFiles = []string{envCfg.SharedCredentialsFile}
+		}
+	})
+	if err == nil {
+		return false
+	}
+
+	var notExist config.SharedConfigProfileNotExistError
+	if errors.As(err, &notExist) && !named {
+		return false
+	}
+	return true
+}
+
+// configFromEnv builds an aws.Config from environment configuration alone,
+// skipping the shared-profile parsing that LoadDefaultConfig cannot be told
+// to skip. It covers the subset of the SDK's resolvers that a connection with
+// explicit credentials depends on: region, credentials, AWS_CA_BUNDLE, and
+// the endpoint settings that service clients read back out of ConfigSources
+// (FIPS, dual-stack, AWS_ENDPOINT_URL). Shared-profile-only settings are, by
+// construction, not carried over -- that is the point.
+func (c *SQLConnector) configFromEnv(creds aws.CredentialsProvider) (aws.Config, error) {
+	envCfg, err := config.NewEnvConfig()
+	if err != nil {
+		return aws.Config{}, err
+	}
+
+	cfg := aws.Config{
+		Region:           c.config.GetRegion(),
+		Credentials:      creds,
+		Logger:           logging.NewStandardLogger(os.Stderr),
+		ConfigSources:    []interface{}{envCfg},
+		AppID:            envCfg.AppID,
+		RetryMaxAttempts: envCfg.RetryMaxAttempts,
+		RetryMode:        envCfg.RetryMode,
+	}
+	if envCfg.BaseEndpoint != "" {
+		cfg.BaseEndpoint = aws.String(envCfg.BaseEndpoint)
+	}
+	if envCfg.CustomCABundle != "" {
+		client, err := caBundleClient(envCfg.CustomCABundle)
+		if err != nil {
+			return aws.Config{}, err
+		}
+		cfg.HTTPClient = client
+	}
+	return cfg, nil
+}
+
+// caBundleClient mirrors the config package's resolveCustomCABundle for the
+// environment-only path above, so that AWS_CA_BUNDLE keeps applying -- and
+// keeps failing loudly when it names a file that is missing or not PEM.
+func caBundleClient(bundlePath string) (aws.HTTPClient, error) {
+	pem, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read custom CA bundle PEM file: %w", err)
+	}
+
+	var appendErr error
+	client := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{}
+		}
+		if tr.TLSClientConfig.RootCAs == nil {
+			tr.TLSClientConfig.RootCAs = x509.NewCertPool()
+		}
+		if !tr.TLSClientConfig.RootCAs.AppendCertsFromPEM(pem) {
+			appendErr = fmt.Errorf("failed to load custom CA bundle PEM file")
+		}
+	})
+	if appendErr != nil {
+		return nil, appendErr
+	}
+	return client, nil
 }
 
 // createBaseConfig creates a base AWS config for assuming a role.
