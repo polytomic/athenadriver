@@ -136,7 +136,7 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		// Default credential chain (environment variables, EC2 instance
 		// profile, IRSA, etc.). LoadDefaultConfig defers credential resolution
 		// to first use, so it does not error when no keys are present.
-		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(c.config.GetRegion()))
+		cfg, err = c.loadDefaultChainConfig(ctx)
 	}
 	if err != nil {
 		c.tracer.Scope().Counter(DriverName + ".failure.sqlconnector.newsession").Inc(1)
@@ -317,5 +317,58 @@ func (c *SQLConnector) createBaseConfig(ctx context.Context) (aws.Config, error)
 	}
 
 	// Fall back to default credential chain (environment variables, EC2 instance profile, etc.)
-	return config.LoadDefaultConfig(ctx, config.WithRegion(c.config.GetRegion()))
+	return c.loadDefaultChainConfig(ctx)
+}
+
+// loadDefaultChainConfig builds an aws.Config whose credentials come from the
+// SDK's default provider chain -- environment variables, web-identity/IRSA, and
+// ECS/EC2 container or instance roles.
+//
+// Under v1, session.NewSession with AWS_SDK_LOAD_CONFIG unset did not read
+// ~/.aws/config on this path, and an absent profile fell through to the next
+// provider in the chain. The v2 SDK always parses the shared config and
+// credentials files inside LoadDefaultConfig, and -- when AWS_PROFILE is set --
+// parses them strictly (see resolveConfigLoaders in the config package). A stray
+// or malformed ~/.aws/config, or a profile that cannot be resolved, therefore
+// fails the whole load before the EC2/container/IRSA providers are ever tried.
+// That regressed connections that rely on the default chain, including the
+// assume-role base config below, whose identity typically comes from IRSA or an
+// instance role rather than a profile.
+//
+// Simply dropping the shared files is not an option: an AWS_PROFILE that names a
+// profile defined only in ~/.aws/config (the common local/CLI setup) would then
+// fail the strict load, breaking a configuration that works today. So the load
+// is attempted normally first -- honoring a genuinely-present profile and any
+// settings it carries -- and only if that fails is it retried with the shared
+// files removed, so ambient shared configuration cannot block a connection whose
+// credentials are meant to come from the environment or an instance/container
+// role. The SDK's own chain resolution (and its container-endpoint host checks)
+// is used in both attempts. Explicit credentials take a different path
+// (configFromEnv) that ignores the shared files entirely, since there the DSN
+// already supplied the credentials.
+func (c *SQLConnector) loadDefaultChainConfig(ctx context.Context) (aws.Config, error) {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(c.config.GetRegion()))
+	if err == nil {
+		return cfg, nil
+	}
+
+	// The initial load failed. If credentials are available from the
+	// environment or an instance/container role, the failure came from parsing
+	// the shared files, not from the chain itself -- retry without them. The
+	// original error is returned if this fallback also fails, since it saw the
+	// real files and is the more informative of the two.
+	//
+	// A profile the caller explicitly selected via AWS_PROFILE that resolves in
+	// neither shared file is not recoverable here: the strict loader still fails
+	// on the retry, and that is intentional -- an unresolvable explicit selection
+	// is a real misconfiguration, not the ambient noise this guards against.
+	cfg, fallbackErr := config.LoadDefaultConfig(ctx,
+		config.WithRegion(c.config.GetRegion()),
+		config.WithSharedConfigFiles([]string{}),
+		config.WithSharedCredentialsFiles([]string{}),
+	)
+	if fallbackErr != nil {
+		return aws.Config{}, err
+	}
+	return cfg, nil
 }

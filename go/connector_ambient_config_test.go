@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -219,4 +220,93 @@ func TestLoadConfigWithCredentials_InvalidCABundleStillErrors(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// The default credential chain -- used both for a bare connection and as the
+// base config for an assume-role connection without static credentials -- must
+// not be blocked by a stray or malformed ~/.aws/config. v1's session did not
+// read that file on this path (AWS_SDK_LOAD_CONFIG unset); v2 does, and fails
+// the whole load when it cannot be parsed, before the EC2/container/IRSA
+// providers are ever tried. loadDefaultChainConfig leaves ~/.aws/config unread
+// to restore the v1 contract while keeping the SDK's chain resolution intact.
+func TestLoadDefaultChainConfig_IgnoresBrokenConfigFile(t *testing.T) {
+	// v1 never read ~/.aws/config on this path, so a broken [default] profile
+	// there was ignored. Under v2 that same profile is resolved eagerly by
+	// LoadDefaultConfig and fails the load. Each of these fails a raw load (see
+	// the precondition below) but must be tolerated once the config file is
+	// dropped.
+	configFiles := []struct {
+		name     string
+		contents string
+	}{
+		{"two credential types", "[default]\ncredential_source = Ec2InstanceMetadata\ncredential_process = /bin/true\n"},
+		{"source_profile pointing at nothing", "[default]\nrole_arn = arn:aws:iam::1:role/r\nsource_profile = ghost\n"},
+		{"credential_source without role_arn", "[default]\ncredential_source = Ec2InstanceMetadata\n"},
+	}
+
+	for _, cf := range configFiles {
+		t.Run(cf.name, func(t *testing.T) {
+			ambientAWSEnv(t, cf.contents)
+			// No AWS_PROFILE selected: this is the default-chain case, where the
+			// runtime identity comes from IRSA or an instance/container role.
+			t.Setenv("AWS_PROFILE", "")
+
+			// Precondition: the raw LoadDefaultConfig this path used to call
+			// really does fail on this ~/.aws/config, so the assertions below
+			// are exercising the fix rather than a no-op.
+			_, rawErr := config.LoadDefaultConfig(context.Background(),
+				config.WithRegion("us-east-1"))
+			require.Error(t, rawErr,
+				"precondition: raw default-chain load should fail on the broken config file")
+
+			c := testConnector(t)
+
+			cfg, err := c.loadDefaultChainConfig(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, "us-east-1", cfg.Region)
+			assert.NotNil(t, cfg.Credentials,
+				"default chain should still be wired up for lazy resolution")
+
+			// The assume-role base config (no static credentials) takes the same
+			// fallback and must be just as tolerant.
+			baseCfg, err := c.createBaseConfig(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, "us-east-1", baseCfg.Region)
+		})
+	}
+}
+
+// v1's SharedConfigDisable still read ~/.aws/credentials, so a genuinely-present
+// AWS_PROFILE must keep resolving from that file. Only ~/.aws/config is dropped.
+func TestLoadDefaultChainConfig_HonorsCredentialsFileProfile(t *testing.T) {
+	dir := ambientAWSEnv(t,
+		// A broken ~/.aws/config that would fail a strict load if it were read.
+		"[profile broken]\ncredential_source = Nonsense\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "credentials"),
+		[]byte("[work]\naws_access_key_id = AKIAPROFILE\naws_secret_access_key = profilesecret\n"), 0600))
+	t.Setenv("AWS_PROFILE", "work")
+
+	c := testConnector(t)
+
+	cfg, err := c.loadDefaultChainConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "us-east-1", cfg.Region)
+
+	// The credentials come from ~/.aws/credentials, not the broken config file.
+	creds, err := cfg.Credentials.Retrieve(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "AKIAPROFILE", creds.AccessKeyID)
+}
+
+// A profile the caller explicitly selects via AWS_PROFILE but that exists in
+// neither shared file is a real misconfiguration, not ambient noise: the strict
+// v2 loader fails on it and the fallback cannot (and should not) paper over it.
+func TestLoadDefaultChainConfig_ExplicitMissingProfileStillErrors(t *testing.T) {
+	ambientAWSEnv(t, "[profile other]\nregion = us-west-2\n")
+	t.Setenv("AWS_PROFILE", "absent")
+
+	c := testConnector(t)
+	_, err := c.loadDefaultChainConfig(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absent")
 }
