@@ -23,6 +23,7 @@ package athenadriver
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 
 	"os"
 	"strconv"
@@ -118,26 +119,14 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		})
 
 		// v1's stscreds.NewCredentials cached implicitly; v2's provider does
-		// not, so wrap it in a credentials cache. Build the config directly
-		// rather than via LoadDefaultConfig so an unrelated AWS_PROFILE in the
-		// environment cannot fail an explicit-credential connection.
-		cfg = aws.Config{
-			Region:      c.config.GetRegion(),
-			Credentials: aws.NewCredentialsCache(provider),
-		}
+		// not, so wrap it in a credentials cache.
+		cfg, err = c.loadConfigWithCredentials(ctx, aws.NewCredentialsCache(provider))
 	} else if c.config.GetAccessID() != "" {
-		// Build the config directly from the DSN's static credentials so a
-		// missing/absent AWS_PROFILE in the environment does not break an
-		// otherwise self-contained connection (LoadDefaultConfig parses shared
-		// config before honoring WithCredentialsProvider).
-		cfg = aws.Config{
-			Region: c.config.GetRegion(),
-			Credentials: credentials.NewStaticCredentialsProvider(
-				c.config.GetAccessID(),
-				c.config.GetSecretAccessKey(),
-				c.config.GetSessionToken(),
-			),
-		}
+		cfg, err = c.loadConfigWithCredentials(ctx, credentials.NewStaticCredentialsProvider(
+			c.config.GetAccessID(),
+			c.config.GetSecretAccessKey(),
+			c.config.GetSessionToken(),
+		))
 	} else {
 		// Default credential chain (environment variables, EC2 instance
 		// profile, IRSA, etc.). LoadDefaultConfig defers credential resolution
@@ -163,22 +152,52 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
+// loadConfigWithCredentials builds an aws.Config that uses the supplied
+// explicit credentials while retaining the SDK's resolved environment
+// settings -- notably AWS_CA_BUNDLE, the client TLS cert/key pair, and the
+// FIPS/dualstack endpoint toggles, all of which v1's session.NewSession
+// applied regardless of AWS_SDK_LOAD_CONFIG.
+//
+// LoadDefaultConfig parses shared config before honoring
+// WithCredentialsProvider, so an unrelated AWS_PROFILE pointing at an absent
+// profile would otherwise fail an entirely self-contained connection. That
+// particular failure is not meaningful here -- the caller supplied the
+// credentials, so no profile is needed -- so retry pinned to the default
+// profile, which the SDK tolerates being absent. Explicitly-supplied region
+// and credentials still take precedence over anything a default profile
+// defines, and the retry keeps the resolved environment settings that a bare
+// aws.Config literal would discard. Any other load error is real and is
+// returned.
+func (c *SQLConnector) loadConfigWithCredentials(ctx context.Context, creds aws.CredentialsProvider) (aws.Config, error) {
+	opts := []func(*config.LoadOptions) error{
+		config.WithRegion(c.config.GetRegion()),
+		config.WithCredentialsProvider(creds),
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
+	if err == nil {
+		return cfg, nil
+	}
+
+	var profileErr config.SharedConfigProfileNotExistError
+	if errors.As(err, &profileErr) {
+		return config.LoadDefaultConfig(ctx, append(opts,
+			config.WithSharedConfigProfile("default"))...)
+	}
+	return aws.Config{}, err
+}
+
 // createBaseConfig creates a base AWS config for assuming a role.
 // This config uses credentials from either static config, environment
 // variables, or the default credential chain.
 func (c *SQLConnector) createBaseConfig(ctx context.Context) (aws.Config, error) {
 	if c.config.GetAccessID() != "" {
-		// Use static credentials if provided. Build the config directly rather
-		// than via LoadDefaultConfig so an unrelated AWS_PROFILE in the
-		// environment cannot fail an explicit-credential connection.
-		return aws.Config{
-			Region: c.config.GetRegion(),
-			Credentials: credentials.NewStaticCredentialsProvider(
-				c.config.GetAccessID(),
-				c.config.GetSecretAccessKey(),
-				c.config.GetSessionToken(),
-			),
-		}, nil
+		// Use static credentials if provided.
+		return c.loadConfigWithCredentials(ctx, credentials.NewStaticCredentialsProvider(
+			c.config.GetAccessID(),
+			c.config.GetSecretAccessKey(),
+			c.config.GetSessionToken(),
+		))
 	}
 
 	// Fall back to default credential chain (environment variables, EC2 instance profile, etc.)

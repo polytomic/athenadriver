@@ -22,13 +22,24 @@ package athenadriver
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/uber-go/tally/v4"
 	"go.uber.org/zap"
+
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 )
 
 func TestSQLConnector(t *testing.T) {
@@ -164,9 +175,9 @@ func TestSQLConnector_Connect_NewSession_Credentials(t *testing.T) {
 // TestSQLConnector_Connect_Credentials_IgnoresAmbientProfile is a regression
 // test for the SDK v2 migration: an explicit static-credential connection must
 // not fail merely because AWS_PROFILE points at a profile that does not exist.
-// Building the config via LoadDefaultConfig parsed shared config first and
-// returned SharedConfigProfileNotExistError before honoring the supplied
-// credentials; building aws.Config directly avoids that.
+// LoadDefaultConfig parses shared config first and returns
+// SharedConfigProfileNotExistError before honoring the supplied credentials;
+// loadConfigWithCredentials treats that specific error as non-fatal.
 func TestSQLConnector_Connect_Credentials_IgnoresAmbientProfile(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetRegion("ap-southeast-1")
@@ -204,6 +215,125 @@ func TestSQLConnector_Connect_AssumeRole_IgnoresAmbientProfile(t *testing.T) {
 	os.Unsetenv("AWS_PROFILE")
 	assert.Nil(t, err)
 	assert.NotNil(t, conn)
+}
+
+// writeTestCABundle writes a self-signed certificate to a temp file and
+// returns its path, for use as an AWS_CA_BUNDLE value. The SDK rejects a
+// bundle it cannot parse, so this must be a real PEM.
+func writeTestCABundle(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	assert.Nil(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "athenadriver-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	assert.Nil(t, err)
+
+	path := filepath.Join(t.TempDir(), "ca-bundle.pem")
+	assert.Nil(t, os.WriteFile(path, pem.EncodeToMemory(
+		&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+	return path
+}
+
+// TestSQLConnector_loadConfigWithCredentials_HonorsCABundle is a regression
+// test for the SDK v2 migration: explicit credentials must not cost us the
+// SDK's resolved transport settings. SDK v1's session.NewSession applied
+// AWS_CA_BUNDLE on the static-credential and assume-role paths regardless of
+// AWS_SDK_LOAD_CONFIG, so constructing aws.Config directly from region and
+// credentials alone silently broke custom-CA environments: Connect succeeded
+// but every Athena/S3 request failed TLS validation.
+func TestSQLConnector_loadConfigWithCredentials_HonorsCABundle(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	os.Setenv("AWS_CA_BUNDLE", writeTestCABundle(t))
+	defer os.Unsetenv("AWS_CA_BUNDLE")
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	cfg, err := connector.loadConfigWithCredentials(context.Background(),
+		credentials.NewStaticCredentialsProvider("testid", "testkey", ""))
+
+	assert.Nil(t, err)
+	assert.Equal(t, "ap-southeast-1", cfg.Region)
+	// The SDK signals a custom bundle by installing an HTTP client whose
+	// transport carries a non-default root CA pool.
+	client, ok := cfg.HTTPClient.(*awshttp.BuildableClient)
+	if !assert.True(t, ok, "expected the SDK's buildable HTTP client, got %T", cfg.HTTPClient) {
+		return
+	}
+	transport := client.GetTransport()
+	if !assert.NotNil(t, transport.TLSClientConfig) {
+		return
+	}
+	assert.NotNil(t, transport.TLSClientConfig.RootCAs)
+}
+
+// TestSQLConnector_loadConfigWithCredentials_CABundleSurvivesAmbientProfile
+// covers the intersection of the two fixes: a bogus AWS_PROFILE must not cost
+// us the CA bundle. The profile fallback has to preserve the resolved
+// environment settings rather than dropping to a bare config, and the
+// caller's own region and credentials must still win over the default profile.
+func TestSQLConnector_loadConfigWithCredentials_CABundleSurvivesAmbientProfile(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	os.Setenv("AWS_CA_BUNDLE", writeTestCABundle(t))
+	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
+	defer func() {
+		os.Unsetenv("AWS_CA_BUNDLE")
+		os.Unsetenv("AWS_PROFILE")
+	}()
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	cfg, err := connector.loadConfigWithCredentials(context.Background(),
+		credentials.NewStaticCredentialsProvider("testid", "testkey", ""))
+
+	assert.Nil(t, err)
+	assert.Equal(t, "ap-southeast-1", cfg.Region)
+	creds, err := cfg.Credentials.Retrieve(context.Background())
+	assert.Nil(t, err)
+	assert.Equal(t, "testid", creds.AccessKeyID)
+
+	client, ok := cfg.HTTPClient.(*awshttp.BuildableClient)
+	if !assert.True(t, ok, "expected the SDK's buildable HTTP client, got %T", cfg.HTTPClient) {
+		return
+	}
+	transport := client.GetTransport()
+	if !assert.NotNil(t, transport.TLSClientConfig) {
+		return
+	}
+	assert.NotNil(t, transport.TLSClientConfig.RootCAs)
+}
+
+// TestSQLConnector_loadConfigWithCredentials_PropagatesLoadError confirms the
+// SharedConfigProfileNotExistError fallback is narrow: any other load failure
+// must still surface rather than being masked by a bare config. An unreadable
+// AWS_CA_BUNDLE is exactly the misconfiguration a silent fallback would hide.
+func TestSQLConnector_loadConfigWithCredentials_PropagatesLoadError(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	os.Setenv("AWS_CA_BUNDLE", "/nonexistent/athenadriver-ca-bundle.pem")
+	defer os.Unsetenv("AWS_CA_BUNDLE")
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	_, err := connector.loadConfigWithCredentials(context.Background(),
+		credentials.NewStaticCredentialsProvider("testid", "testkey", ""))
+
+	assert.NotNil(t, err)
 }
 
 func TestSQLConnector_Driver(t *testing.T) {
