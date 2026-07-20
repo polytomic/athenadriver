@@ -239,10 +239,12 @@ func sharedConfigIsAtFault(ctx context.Context) bool {
 
 // configFromEnv builds an aws.Config from environment configuration alone,
 // skipping the shared-profile parsing that LoadDefaultConfig cannot be told
-// to skip. It covers the subset of the SDK's resolvers that a connection with
-// explicit credentials depends on: region, credentials, AWS_CA_BUNDLE, and
-// the endpoint settings that service clients read back out of ConfigSources
-// (FIPS, dual-stack, AWS_ENDPOINT_URL). Shared-profile-only settings are, by
+// to skip. It reproduces the SDK's resolvers for everything a client can
+// observe from the environment: region, credentials, AWS_CA_BUNDLE, the
+// endpoint settings that service clients read back out of ConfigSources
+// (FIPS, dual-stack, AWS_ENDPOINT_URL), and the settings clients read off
+// aws.Config directly -- including their defaults, since an unset field there
+// means "off", not "unconfigured". Shared-profile-only settings are, by
 // construction, not carried over -- that is the point.
 func (c *SQLConnector) configFromEnv(creds aws.CredentialsProvider) (aws.Config, error) {
 	envCfg, err := config.NewEnvConfig()
@@ -258,6 +260,30 @@ func (c *SQLConnector) configFromEnv(creds aws.CredentialsProvider) (aws.Config,
 		AppID:            envCfg.AppID,
 		RetryMaxAttempts: envCfg.RetryMaxAttempts,
 		RetryMode:        envCfg.RetryMode,
+
+		// Settings below are read by service clients off aws.Config itself
+		// rather than out of ConfigSources, so their environment values and
+		// resolver defaults have to be reproduced here. Leaving them zero is
+		// not equivalent to "unconfigured": an Unset ResponseChecksumValidation
+		// silently turns off S3 response checksum validation, which the SDK
+		// enables by default.
+		DefaultsMode:               defaultsModeOrDefault(envCfg.DefaultsMode),
+		AccountIDEndpointMode:      accountIDEndpointModeOrDefault(envCfg.AccountIDEndpointMode),
+		RequestChecksumCalculation: requestChecksumOrDefault(envCfg.RequestChecksumCalculation),
+		ResponseChecksumValidation: responseChecksumOrDefault(envCfg.ResponseChecksumValidation),
+		RequestMinCompressSizeBytes: derefOr(
+			envCfg.RequestMinCompressSizeBytes, defaultRequestMinCompressSizeBytes),
+		DisableRequestCompression: derefOr(envCfg.DisableRequestCompression, false),
+		AuthSchemePreference:      envCfg.AuthSchemePreference,
+	}
+	if cfg.DefaultsMode == aws.DefaultsModeAuto {
+		// The config package additionally asks IMDS for the instance region
+		// here; that call is skipped rather than made on the connection path,
+		// so auto mode resolves without the in-region/cross-region signal.
+		cfg.RuntimeEnvironment = aws.RuntimeEnvironment{
+			EnvironmentIdentifier: aws.ExecutionEnvironmentID(os.Getenv("AWS_EXECUTION_ENV")),
+			Region:                envCfg.Region,
+		}
 	}
 	if envCfg.BaseEndpoint != "" {
 		cfg.BaseEndpoint = aws.String(envCfg.BaseEndpoint)
@@ -270,6 +296,45 @@ func (c *SQLConnector) configFromEnv(creds aws.CredentialsProvider) (aws.Config,
 		cfg.HTTPClient = client
 	}
 	return cfg, nil
+}
+
+// defaultRequestMinCompressSizeBytes mirrors the fallback the config package's
+// resolveRequestMinCompressSizeBytes applies when nothing configures it.
+const defaultRequestMinCompressSizeBytes = 10240
+
+func defaultsModeOrDefault(m aws.DefaultsMode) aws.DefaultsMode {
+	if m == "" {
+		return aws.DefaultsModeLegacy
+	}
+	return m
+}
+
+func accountIDEndpointModeOrDefault(m aws.AccountIDEndpointMode) aws.AccountIDEndpointMode {
+	if m == "" {
+		return aws.AccountIDEndpointModePreferred
+	}
+	return m
+}
+
+func requestChecksumOrDefault(c aws.RequestChecksumCalculation) aws.RequestChecksumCalculation {
+	if c == 0 {
+		return aws.RequestChecksumCalculationWhenSupported
+	}
+	return c
+}
+
+func responseChecksumOrDefault(v aws.ResponseChecksumValidation) aws.ResponseChecksumValidation {
+	if v == 0 {
+		return aws.ResponseChecksumValidationWhenSupported
+	}
+	return v
+}
+
+func derefOr[T any](v *T, fallback T) T {
+	if v == nil {
+		return fallback
+	}
+	return *v
 }
 
 // caBundleClient mirrors the config package's resolveCustomCABundle for the

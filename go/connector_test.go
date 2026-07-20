@@ -38,6 +38,7 @@ import (
 	"github.com/uber-go/tally/v4"
 	"go.uber.org/zap"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 )
@@ -314,6 +315,65 @@ func TestSQLConnector_loadConfigWithCredentials_CABundleSurvivesAmbientProfile(t
 		return
 	}
 	assert.NotNil(t, transport.TLSClientConfig.RootCAs)
+}
+
+// TestSQLConnector_loadConfigWithCredentials_FallbackKeepsSDKDefaults is a
+// regression test for a subtler version of the same loss: DefaultsMode,
+// AccountIDEndpointMode, the compression settings, and the checksum settings
+// are read by athena.NewFromConfig/s3.NewFromConfig off aws.Config directly,
+// not out of ConfigSources. Leaving them zero is not "unconfigured" -- an
+// Unset ResponseChecksumValidation disables S3 response checksum validation
+// for query results, which the SDK otherwise performs by default.
+func TestSQLConnector_loadConfigWithCredentials_FallbackKeepsSDKDefaults(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
+	defer os.Unsetenv("AWS_PROFILE")
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	cfg, err := connector.loadConfigWithCredentials(context.Background(),
+		credentials.NewStaticCredentialsProvider("testid", "testkey", ""))
+
+	assert.Nil(t, err)
+	assert.Equal(t, aws.ResponseChecksumValidationWhenSupported, cfg.ResponseChecksumValidation)
+	assert.Equal(t, aws.RequestChecksumCalculationWhenSupported, cfg.RequestChecksumCalculation)
+	assert.Equal(t, aws.DefaultsModeLegacy, cfg.DefaultsMode)
+	assert.Equal(t, aws.AccountIDEndpointMode(aws.AccountIDEndpointModePreferred), cfg.AccountIDEndpointMode)
+	assert.Equal(t, int64(10240), cfg.RequestMinCompressSizeBytes)
+	assert.False(t, cfg.DisableRequestCompression)
+}
+
+// TestSQLConnector_loadConfigWithCredentials_FallbackHonorsSDKEnv covers the
+// other half: where those settings do have environment variables, the fallback
+// must honor them rather than falling back to the resolver defaults.
+func TestSQLConnector_loadConfigWithCredentials_FallbackHonorsSDKEnv(t *testing.T) {
+	testConf := NewNoOpsConfig()
+	_ = testConf.SetRegion("ap-southeast-1")
+	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
+	os.Setenv("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
+	os.Setenv("AWS_DEFAULTS_MODE", "standard")
+	os.Setenv("AWS_DISABLE_REQUEST_COMPRESSION", "true")
+	defer func() {
+		os.Unsetenv("AWS_PROFILE")
+		os.Unsetenv("AWS_RESPONSE_CHECKSUM_VALIDATION")
+		os.Unsetenv("AWS_DEFAULTS_MODE")
+		os.Unsetenv("AWS_DISABLE_REQUEST_COMPRESSION")
+	}()
+	connector := &SQLConnector{
+		config: testConf,
+		tracer: NewDefaultObservability(testConf),
+	}
+
+	cfg, err := connector.loadConfigWithCredentials(context.Background(),
+		credentials.NewStaticCredentialsProvider("testid", "testkey", ""))
+
+	assert.Nil(t, err)
+	assert.Equal(t, aws.ResponseChecksumValidationWhenRequired, cfg.ResponseChecksumValidation)
+	assert.Equal(t, aws.DefaultsModeStandard, cfg.DefaultsMode)
+	assert.True(t, cfg.DisableRequestCompression)
 }
 
 // TestSQLConnector_loadConfigWithCredentials_PropagatesLoadError confirms the
