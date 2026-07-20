@@ -25,7 +25,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -158,88 +157,28 @@ func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// loadConfigWithCredentials builds an aws.Config that uses the supplied
-// explicit credentials while retaining the SDK's resolved environment
-// settings -- notably AWS_CA_BUNDLE and the FIPS/dualstack endpoint toggles,
-// both of which v1's session.NewSession applied regardless of
-// AWS_SDK_LOAD_CONFIG.
+// loadConfigWithCredentials builds an aws.Config for a connection that
+// supplies its own credentials -- static keys or an assume-role provider.
 //
-// LoadDefaultConfig parses the ambient shared profile before it honors
-// WithCredentialsProvider, and it parses it strictly whenever AWS_PROFILE is
-// set -- see resolveConfigLoaders in the config package, which only tolerates
-// a missing profile when AWS_PROFILE is empty. A profile that is absent,
-// malformed, or merely incomplete (credential_source without role_arn, say)
-// therefore fails a connection that supplied its own credentials and needs no
-// profile at all. No LoadOptions setting relaxes this: the shared config
-// loader runs before any option is consulted, so pinning the profile or
-// emptying the file list does not help, and neither can the fallback go
-// through LoadDefaultConfig.
+// It deliberately does not go through LoadDefaultConfig. The v2 SDK always
+// parses the ambient shared config, regardless of AWS_SDK_LOAD_CONFIG, and
+// offers no option to skip it; with AWS_PROFILE set, resolveConfigLoaders in
+// the config package even parses it strictly, so an absent, malformed, or
+// merely incomplete profile would fail a connection that needs no profile at
+// all. And when parsing succeeds, profile settings (use_fips_endpoint,
+// endpoint URLs, retry modes, ...) would silently apply to a connection whose
+// DSN specified its credentials explicitly.
 //
-// So when a load failure is attributable to the shared configuration, rebuild
-// from the environment alone, which does no profile parsing. Genuine
-// environment errors -- an unreadable or malformed AWS_CA_BUNDLE, an invalid
-// AWS_USE_FIPS_ENDPOINT -- still surface, from either attempt.
-func (c *SQLConnector) loadConfigWithCredentials(ctx context.Context, creds aws.CredentialsProvider) (aws.Config, error) {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(c.config.GetRegion()),
-		config.WithCredentialsProvider(creds),
-	)
-	if err == nil {
-		return cfg, nil
-	}
-	if !sharedConfigIsAtFault(ctx) {
-		return aws.Config{}, err
-	}
+// v1's session.NewSession read only the environment on these paths, and that
+// is the contract kept here: explicit credentials plus environment settings
+// (AWS_CA_BUNDLE, the FIPS/dual-stack toggles, retry variables), never the
+// shared profile.
+func (c *SQLConnector) loadConfigWithCredentials(_ context.Context, creds aws.CredentialsProvider) (aws.Config, error) {
 	return c.configFromEnv(creds)
 }
 
-// sharedConfigIsAtFault reports whether the ambient shared configuration is
-// itself unloadable, and so is the likely cause of a LoadDefaultConfig
-// failure. Attributing by behavior rather than by error type is deliberate:
-// several shared-config validation failures are bare fmt.Errorf values with
-// no type to match on.
-//
-// A profile that simply does not exist counts only when AWS_PROFILE named it.
-// With AWS_PROFILE unset the SDK already tolerates an absent default profile,
-// so a load failure in that case came from somewhere else and must not be
-// swallowed.
-func sharedConfigIsAtFault(ctx context.Context) bool {
-	envCfg, err := config.NewEnvConfig()
-	if err != nil {
-		return false
-	}
-
-	profile := envCfg.SharedConfigProfile
-	named := profile != ""
-	if !named {
-		profile = config.DefaultSharedConfigProfile
-	}
-
-	// LoadSharedConfigProfile defaults to ~/.aws/{config,credentials} and does
-	// not consult AWS_CONFIG_FILE or AWS_SHARED_CREDENTIALS_FILE itself, so
-	// point it at the same files LoadDefaultConfig just used.
-	_, err = config.LoadSharedConfigProfile(ctx, profile, func(o *config.LoadSharedConfigOptions) {
-		if envCfg.SharedConfigFile != "" {
-			o.ConfigFiles = []string{envCfg.SharedConfigFile}
-		}
-		if envCfg.SharedCredentialsFile != "" {
-			o.CredentialsFiles = []string{envCfg.SharedCredentialsFile}
-		}
-	})
-	if err == nil {
-		return false
-	}
-
-	var notExist config.SharedConfigProfileNotExistError
-	if errors.As(err, &notExist) && !named {
-		return false
-	}
-	return true
-}
-
 // configFromEnv builds an aws.Config from environment configuration alone,
-// skipping the shared-profile parsing that LoadDefaultConfig cannot be told
-// to skip. It reproduces the SDK's resolvers for everything a client can
+// with no shared-profile parsing. It reproduces the SDK's resolvers for everything a client can
 // observe from the environment: region, credentials, AWS_CA_BUNDLE, the
 // endpoint settings that service clients read back out of ConfigSources
 // (FIPS, dual-stack, AWS_ENDPOINT_URL), and the settings clients read off

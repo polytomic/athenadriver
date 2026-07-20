@@ -176,9 +176,8 @@ func TestSQLConnector_Connect_NewSession_Credentials(t *testing.T) {
 // TestSQLConnector_Connect_Credentials_IgnoresAmbientProfile is a regression
 // test for the SDK v2 migration: an explicit static-credential connection must
 // not fail merely because AWS_PROFILE points at a profile that does not exist.
-// LoadDefaultConfig parses shared config first and returns
-// SharedConfigProfileNotExistError before honoring the supplied credentials;
-// loadConfigWithCredentials treats that specific error as non-fatal.
+// LoadDefaultConfig would parse shared config first and fail before honoring
+// the supplied credentials; the explicit-credential path avoids it entirely.
 func TestSQLConnector_Connect_Credentials_IgnoresAmbientProfile(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetRegion("ap-southeast-1")
@@ -280,7 +279,7 @@ func TestSQLConnector_loadConfigWithCredentials_HonorsCABundle(t *testing.T) {
 
 // TestSQLConnector_loadConfigWithCredentials_CABundleSurvivesAmbientProfile
 // covers the intersection of the two fixes: a bogus AWS_PROFILE must not cost
-// us the CA bundle. The profile fallback has to preserve the resolved
+// us the CA bundle. The environment-only path has to preserve the resolved
 // environment settings rather than dropping to a bare config, and the
 // caller's own region and credentials must still win over the default profile.
 func TestSQLConnector_loadConfigWithCredentials_CABundleSurvivesAmbientProfile(t *testing.T) {
@@ -317,14 +316,14 @@ func TestSQLConnector_loadConfigWithCredentials_CABundleSurvivesAmbientProfile(t
 	assert.NotNil(t, transport.TLSClientConfig.RootCAs)
 }
 
-// TestSQLConnector_loadConfigWithCredentials_FallbackKeepsSDKDefaults is a
+// TestSQLConnector_loadConfigWithCredentials_KeepsSDKDefaults is a
 // regression test for a subtler version of the same loss: DefaultsMode,
 // AccountIDEndpointMode, the compression settings, and the checksum settings
 // are read by athena.NewFromConfig/s3.NewFromConfig off aws.Config directly,
 // not out of ConfigSources. Leaving them zero is not "unconfigured" -- an
 // Unset ResponseChecksumValidation disables S3 response checksum validation
 // for query results, which the SDK otherwise performs by default.
-func TestSQLConnector_loadConfigWithCredentials_FallbackKeepsSDKDefaults(t *testing.T) {
+func TestSQLConnector_loadConfigWithCredentials_KeepsSDKDefaults(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetRegion("ap-southeast-1")
 	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
@@ -346,10 +345,10 @@ func TestSQLConnector_loadConfigWithCredentials_FallbackKeepsSDKDefaults(t *test
 	assert.False(t, cfg.DisableRequestCompression)
 }
 
-// TestSQLConnector_loadConfigWithCredentials_FallbackHonorsSDKEnv covers the
-// other half: where those settings do have environment variables, the fallback
-// must honor them rather than falling back to the resolver defaults.
-func TestSQLConnector_loadConfigWithCredentials_FallbackHonorsSDKEnv(t *testing.T) {
+// TestSQLConnector_loadConfigWithCredentials_HonorsSDKEnv covers the other
+// half: where those settings do have environment variables, they must be
+// honored rather than replaced with the resolver defaults.
+func TestSQLConnector_loadConfigWithCredentials_HonorsSDKEnv(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetRegion("ap-southeast-1")
 	os.Setenv("AWS_PROFILE", "athenadriver-nonexistent-profile-regression")
@@ -376,10 +375,9 @@ func TestSQLConnector_loadConfigWithCredentials_FallbackHonorsSDKEnv(t *testing.
 	assert.True(t, cfg.DisableRequestCompression)
 }
 
-// TestSQLConnector_loadConfigWithCredentials_PropagatesLoadError confirms the
-// SharedConfigProfileNotExistError fallback is narrow: any other load failure
-// must still surface rather than being masked by a bare config. An unreadable
-// AWS_CA_BUNDLE is exactly the misconfiguration a silent fallback would hide.
+// TestSQLConnector_loadConfigWithCredentials_PropagatesLoadError confirms
+// that genuine environment errors still surface from the environment-only
+// path: an unreadable AWS_CA_BUNDLE must fail the connection, not be skipped.
 func TestSQLConnector_loadConfigWithCredentials_PropagatesLoadError(t *testing.T) {
 	testConf := NewNoOpsConfig()
 	_ = testConf.SetRegion("ap-southeast-1")

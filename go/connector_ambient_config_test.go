@@ -47,6 +47,8 @@ func ambientAWSEnv(t *testing.T, configContents string) string {
 	t.Setenv("AWS_CA_BUNDLE", "")
 	t.Setenv("AWS_REGION", "")
 	t.Setenv("AWS_DEFAULT_REGION", "")
+	t.Setenv("AWS_MAX_ATTEMPTS", "")
+	t.Setenv("AWS_USE_FIPS_ENDPOINT", "")
 
 	return dir
 }
@@ -63,8 +65,8 @@ func staticCreds() aws.CredentialsProvider {
 	return credentials.NewStaticCredentialsProvider("AKIAFAKE", "secret", "")
 }
 
-// Explicit credentials must survive ambient shared-profile configuration that
-// is broken in ways this connection does not care about.
+// Explicit credentials must be unaffected by ambient shared-profile
+// configuration, however broken: the explicit-credential path never reads it.
 func TestLoadConfigWithCredentials_IgnoresAmbientProfileFailures(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -77,9 +79,8 @@ func TestLoadConfigWithCredentials_IgnoresAmbientProfileFailures(t *testing.T) {
 			profileEnv: "absent",
 		},
 		{
-			// The regression the previous retry missed: this is not a
-			// SharedConfigProfileNotExistError, so type-matching alone let it
-			// through.
+			// Not a SharedConfigProfileNotExistError: regression coverage from
+			// when a fallback heuristic type-matched on the load error.
 			name:       "credential_source without role_arn",
 			configFile: "[profile broken]\ncredential_source = Ec2InstanceMetadata\n",
 			profileEnv: "broken",
@@ -120,24 +121,39 @@ func TestLoadConfigWithCredentials_IgnoresAmbientProfileFailures(t *testing.T) {
 	}
 }
 
-// A usable ambient profile should still be loaded normally -- the fallback is
-// not supposed to kick in and discard it.
-func TestLoadConfigWithCredentials_HealthyProfile(t *testing.T) {
-	ambientAWSEnv(t, "[profile fine]\nregion = us-west-2\n")
+// A healthy ambient profile is ignored just as thoroughly as a broken one.
+// Explicit-credential connections read only the environment, matching the v1
+// SDK's behavior with AWS_SDK_LOAD_CONFIG unset, so profile settings must not
+// leak into the client config.
+func TestLoadConfigWithCredentials_IgnoresHealthyProfileSettings(t *testing.T) {
+	ambientAWSEnv(t,
+		"[profile fine]\nregion = us-west-2\nuse_fips_endpoint = true\nmax_attempts = 99\n")
 	t.Setenv("AWS_PROFILE", "fine")
 
 	c := testConnector(t)
 	cfg, err := c.loadConfigWithCredentials(context.Background(), staticCreds())
 	require.NoError(t, err)
 
-	// Explicit region still wins over the profile's us-west-2.
 	assert.Equal(t, "us-east-1", cfg.Region)
 	creds, err := cfg.Credentials.Retrieve(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "AKIAFAKE", creds.AccessKeyID)
+
+	// max_attempts from the profile must not apply.
+	assert.Zero(t, cfg.RetryMaxAttempts)
+
+	// Nor use_fips_endpoint: the env config in ConfigSources reports it unset.
+	require.Len(t, cfg.ConfigSources, 1)
+	src, ok := cfg.ConfigSources[0].(interface {
+		GetUseFIPSEndpoint(context.Context) (aws.FIPSEndpointState, bool, error)
+	})
+	require.True(t, ok, "ConfigSources should expose the env config")
+	_, found, err := src.GetUseFIPSEndpoint(context.Background())
+	require.NoError(t, err)
+	assert.False(t, found, "profile use_fips_endpoint should not be visible")
 }
 
-// Environment settings that are not profile-derived must survive the fallback.
+// Environment settings still apply on the explicit-credential path.
 func TestLoadConfigWithCredentials_KeepsEnvSettings(t *testing.T) {
 	ambientAWSEnv(t, "[profile broken]\ncredential_source = Ec2InstanceMetadata\n")
 	t.Setenv("AWS_PROFILE", "broken")
@@ -166,8 +182,8 @@ func TestLoadConfigWithCredentials_KeepsEnvSettings(t *testing.T) {
 	assert.Equal(t, aws.FIPSEndpointStateEnabled, state)
 }
 
-// A genuinely broken transport setting is a real error and must not be
-// swallowed by the fallback, whether or not the ambient profile is also bad.
+// A genuinely broken transport setting is a real error and must surface,
+// whether or not the ambient profile is also bad.
 func TestLoadConfigWithCredentials_InvalidCABundleStillErrors(t *testing.T) {
 	tests := []struct {
 		name       string
