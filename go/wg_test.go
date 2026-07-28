@@ -24,6 +24,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,6 +37,60 @@ func TestNewWG(t *testing.T) {
 	wg := NewWG("henry_wu", nil, wgTags)
 	assert.Equal(t, wg.Name, "henry_wu")
 	assert.Equal(t, len(wg.Tags.Get()), 3)
+}
+
+func TestWGConfigStringResultConfiguration(t *testing.T) {
+	conf := NewWGConfig(DefaultBytesScannedCutoffPerQuery, true, true, false,
+		&types.ResultConfiguration{
+			EncryptionConfiguration: &types.EncryptionConfiguration{
+				EncryptionOption: types.EncryptionOptionSseKms,
+				KmsKey:           aws.String("arn:aws:kms:us-east-1:123456789012:key/abc"),
+			},
+			OutputLocation: aws.String("s3://query-results-henry-wu-us-east-2/"),
+		})
+	expected := `{
+  BytesScannedCutoffPerQuery: 1073741824,
+  EnforceWorkGroupConfiguration: true,
+  PublishCloudWatchMetricsEnabled: true,
+  RequesterPaysEnabled: false,
+  ResultConfiguration: {
+    EncryptionConfiguration: {
+      EncryptionOption: "SSE_KMS",
+      KmsKey: "arn:aws:kms:us-east-1:123456789012:key/abc"
+    },
+    OutputLocation: "s3://query-results-henry-wu-us-east-2/"
+  }
+}`
+	assert.Equal(t, expected, wgConfigString(conf))
+}
+
+// TestWGConfigStringExtraFields exercises fields the driver's own constructors
+// never populate (AdditionalConfiguration, EngineVersion, ExecutionRole). The
+// SDK v1 String() rendered every populated field, so callers that build a
+// WorkGroupConfiguration by hand must still see them in the serialized DSN.
+func TestWGConfigStringExtraFields(t *testing.T) {
+	var bytesScannedCutoffPerQuery int64 = DefaultBytesScannedCutoffPerQuery
+	conf := &types.WorkGroupConfiguration{
+		AdditionalConfiguration:         aws.String("some-notebook-config"),
+		BytesScannedCutoffPerQuery:      &bytesScannedCutoffPerQuery,
+		EnforceWorkGroupConfiguration:   aws.Bool(true),
+		EngineVersion:                   &types.EngineVersion{SelectedEngineVersion: aws.String("Athena engine version 3")},
+		ExecutionRole:                   aws.String("arn:aws:iam::123456789012:role/AthenaSpark"),
+		PublishCloudWatchMetricsEnabled: aws.Bool(true),
+		RequesterPaysEnabled:            aws.Bool(false),
+	}
+	expected := `{
+  AdditionalConfiguration: "some-notebook-config",
+  BytesScannedCutoffPerQuery: 1073741824,
+  EnforceWorkGroupConfiguration: true,
+  EngineVersion: {
+    SelectedEngineVersion: "Athena engine version 3"
+  },
+  ExecutionRole: "arn:aws:iam::123456789012:role/AthenaSpark",
+  PublishCloudWatchMetricsEnabled: true,
+  RequesterPaysEnabled: false
+}`
+	assert.Equal(t, expected, wgConfigString(conf))
 }
 
 func TestGetWG(t *testing.T) {
@@ -60,10 +116,10 @@ func TestWorkgroup_CreateWGRemotely(t *testing.T) {
 	wgTags.AddTag("Uber Role", "SDE")
 	wg := NewWG("henry_wu", nil, wgTags)
 	athenaClient := newMockAthenaClient()
-	e := wg.CreateWGRemotely(athenaClient)
+	e := wg.CreateWGRemotely(context.Background(), athenaClient)
 	assert.NotNil(t, e)
 	athenaClient.CreateWGStatus = true
-	e = wg.CreateWGRemotely(athenaClient)
+	e = wg.CreateWGRemotely(context.Background(), athenaClient)
 	assert.Nil(t, e)
 }
 
@@ -71,9 +127,9 @@ func TestWorkgroup_CreateWGRemotely2(t *testing.T) {
 	wgTags := NewWGTags()
 	wg := NewWG("henry_wu", nil, wgTags)
 	athenaClient := newMockAthenaClient()
-	e := wg.CreateWGRemotely(athenaClient)
+	e := wg.CreateWGRemotely(context.Background(), athenaClient)
 	assert.NotNil(t, e)
 	athenaClient.CreateWGStatus = true
-	e = wg.CreateWGRemotely(athenaClient)
+	e = wg.CreateWGRemotely(context.Background(), athenaClient)
 	assert.Nil(t, e)
 }

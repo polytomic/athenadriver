@@ -35,7 +35,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/aws/aws-sdk-go/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/xwb1989/sqlparser"
 )
@@ -307,49 +308,36 @@ func isInsertStatement(query string) bool {
 	return strings.Index(nQuery, "insert") == 0
 }
 
-func newColumnInfo(colName string, colType interface{}) *athena.ColumnInfo {
-	caseSensitive := false
+func newColumnInfo(colName string, colType interface{}) types.ColumnInfo {
 	catalogName := "hive"
-	nullable := "UNKNOWN"
-	precision := int64(19)
-	scale := int64(0)
 	schemaName := ""
 	tableName := ""
-	if colType == nil {
-		return &athena.ColumnInfo{
-			CaseSensitive: &caseSensitive,
-			CatalogName:   &catalogName,
-			Label:         &colName,
-			Name:          &colName,
-			Nullable:      &nullable,
-			Precision:     &precision,
-			Scale:         &scale,
-			SchemaName:    &schemaName,
-			TableName:     &tableName,
-			Type:          nil,
-		}
-	}
-	ct := colType.(string)
-	return &athena.ColumnInfo{
-		CaseSensitive: &caseSensitive,
+	ci := types.ColumnInfo{
+		CaseSensitive: false,
 		CatalogName:   &catalogName,
 		Label:         &colName,
 		Name:          &colName,
-		Nullable:      &nullable,
-		Precision:     &precision,
-		Scale:         &scale,
+		Nullable:      types.ColumnNullableUnknown,
+		Precision:     19,
+		Scale:         0,
 		SchemaName:    &schemaName,
 		TableName:     &tableName,
-		Type:          &ct,
+		Type:          nil,
 	}
+	if colType == nil {
+		return ci
+	}
+	ct := colType.(string)
+	ci.Type = &ct
+	return ci
 }
 
-func newRow(colLen int, rData []string) *athena.Row {
-	var nData = make([]*athena.Datum, colLen)
+func newRow(colLen int, rData []string) types.Row {
+	var nData = make([]types.Datum, colLen)
 	for i := 0; i < colLen; i++ {
-		nData[i] = &athena.Datum{VarCharValue: &rData[i]}
+		nData[i] = types.Datum{VarCharValue: &rData[i]}
 	}
-	return &athena.Row{
+	return types.Row{
 		Data: nData,
 	}
 }
@@ -430,7 +418,7 @@ func randTimeStamp() *string {
 	return &s
 }
 
-func genHeaderRow(columns []*athena.ColumnInfo) *athena.Row {
+func genHeaderRow(columns []types.ColumnInfo) types.Row {
 	colLen := len(columns)
 	rData := make([]string, colLen)
 	for i := 0; i < colLen; i++ {
@@ -440,92 +428,92 @@ func genHeaderRow(columns []*athena.ColumnInfo) *athena.Row {
 }
 
 // randRow generates a row with random data aligned with type information in
-// athena.ColumnInfo
-func randRow(columns []*athena.ColumnInfo) *athena.Row {
+// types.ColumnInfo
+func randRow(columns []types.ColumnInfo) types.Row {
 	colLen := len(columns)
-	row := &athena.Row{
-		Data: make([]*athena.Datum, colLen),
+	row := types.Row{
+		Data: make([]types.Datum, colLen),
 	}
 	for j := 0; j < colLen; j++ {
 		if columns[j].Type == nil {
 			s := "a\tb"
-			row.Data[j] = &athena.Datum{VarCharValue: &s}
+			row.Data[j] = types.Datum{VarCharValue: &s}
 			continue
 		}
 		switch *columns[j].Type {
 		case "tinyint":
-			row.Data[j] = &athena.Datum{VarCharValue: randInt8()}
+			row.Data[j] = types.Datum{VarCharValue: randInt8()}
 		case "smallint":
-			row.Data[j] = &athena.Datum{VarCharValue: randInt16()}
+			row.Data[j] = types.Datum{VarCharValue: randInt16()}
 		case "integer":
-			row.Data[j] = &athena.Datum{VarCharValue: randInt()}
+			row.Data[j] = types.Datum{VarCharValue: randInt()}
 		case "bigint":
-			row.Data[j] = &athena.Datum{VarCharValue: randUInt64()}
+			row.Data[j] = types.Datum{VarCharValue: randUInt64()}
 		case "float", "real":
-			row.Data[j] = &athena.Datum{VarCharValue: randFloat32()}
+			row.Data[j] = types.Datum{VarCharValue: randFloat32()}
 		case "double":
-			row.Data[j] = &athena.Datum{VarCharValue: randFloat64()}
+			row.Data[j] = types.Datum{VarCharValue: randFloat64()}
 		case "json", "char", "varchar", "varbinary", "row", "string", "binary",
 			"struct", "interval year to month", "interval day to second", "decimal",
 			"ipaddress", "array", "map", "unknown":
-			row.Data[j] = &athena.Datum{VarCharValue: randStr()}
+			row.Data[j] = types.Datum{VarCharValue: randStr()}
 		case "boolean":
-			row.Data[j] = &athena.Datum{VarCharValue: randBool()}
+			row.Data[j] = types.Datum{VarCharValue: randBool()}
 		case "date":
-			row.Data[j] = &athena.Datum{VarCharValue: randDate()}
+			row.Data[j] = types.Datum{VarCharValue: randDate()}
 		case "time", "time with time zone", "timestamp with time zone":
-			row.Data[j] = &athena.Datum{VarCharValue: randTimeStamp()}
+			row.Data[j] = types.Datum{VarCharValue: randTimeStamp()}
 		case "timestamp":
-			row.Data[j] = &athena.Datum{VarCharValue: randTimeStamp()}
+			row.Data[j] = types.Datum{VarCharValue: randTimeStamp()}
 		default:
-			row.Data[j] = &athena.Datum{VarCharValue: randStr()}
+			row.Data[j] = types.Datum{VarCharValue: randStr()}
 		}
 	}
 	return row
 }
 
-func missingDataRow(columns []*athena.ColumnInfo) *athena.Row {
+func missingDataRow(columns []types.ColumnInfo) types.Row {
 	colLen := len(columns)
-	row := &athena.Row{
-		Data: make([]*athena.Datum, colLen),
+	row := types.Row{
+		Data: make([]types.Datum, colLen),
 	}
 	for j := 0; j < colLen; j++ {
 		switch *columns[j].Type {
 		case "integer":
-			row.Data[j] = &athena.Datum{VarCharValue: nil}
+			row.Data[j] = types.Datum{VarCharValue: nil}
 		default:
-			row.Data[j] = nil
+			row.Data[j] = types.Datum{VarCharValue: nil}
 		}
 	}
 	return row
 }
 
-func genRow(rowData []*string) *athena.Row {
-	row := &athena.Row{
-		Data: make([]*athena.Datum, len(rowData)),
+func genRow(rowData []*string) types.Row {
+	row := types.Row{
+		Data: make([]types.Datum, len(rowData)),
 	}
 	for i := 0; i < len(rowData); i++ {
-		row.Data[i] = &athena.Datum{VarCharValue: rowData[i]}
+		row.Data[i] = types.Datum{VarCharValue: rowData[i]}
 	}
 	return row
 }
 
 // columnTypes must be from one of AthenaColumnTypes
 func newHeaderResultPage(columnNames []*string, columnTypes []string, rowsData [][]*string) *athena.GetQueryResultsOutput {
-	columns := make([]*athena.ColumnInfo, len(columnNames))
+	columns := make([]types.ColumnInfo, len(columnNames))
 	for i := 0; i < len(columnNames); i++ {
 		columns[i] = newColumnInfo(*columnNames[i], columnTypes[i])
 	}
 	rowLen := len(rowsData)
-	rows := make([]*athena.Row, rowLen+1)
+	rows := make([]types.Row, rowLen+1)
 	rows[0] = genHeaderRow(columns)
 	for i := 1; i < rowLen+1; i++ {
 		rows[i] = genRow(rowsData[i-1])
 	}
 	return &athena.GetQueryResultsOutput{
 		NextToken: nil,
-		ResultSet: &athena.ResultSet{
-			ResultSetMetadata: &athena.ResultSetMetadata{
+		ResultSet: &types.ResultSet{
+			ResultSetMetadata: &types.ResultSetMetadata{
 				ColumnInfo: columns,
 			},
 			Rows: rows,
@@ -534,19 +522,19 @@ func newHeaderResultPage(columnNames []*string, columnTypes []string, rowsData [
 }
 
 func newHeaderlessResultPage(columnNames []*string, columnTypes []string, rowsData [][]*string) *athena.GetQueryResultsOutput {
-	columns := make([]*athena.ColumnInfo, len(columnNames))
+	columns := make([]types.ColumnInfo, len(columnNames))
 	for i := 0; i < len(columnNames); i++ {
 		columns[i] = newColumnInfo(*columnNames[i], columnTypes[i])
 	}
 	rowLen := len(rowsData)
-	rows := make([]*athena.Row, rowLen)
+	rows := make([]types.Row, rowLen)
 	for i := 0; i < rowLen; i++ {
 		rows[i] = genRow(rowsData[i])
 	}
 	return &athena.GetQueryResultsOutput{
 		NextToken: nil,
-		ResultSet: &athena.ResultSet{
-			ResultSetMetadata: &athena.ResultSetMetadata{
+		ResultSet: &types.ResultSet{
+			ResultSetMetadata: &types.ResultSetMetadata{
 				ColumnInfo: columns,
 			},
 			Rows: rows,
@@ -554,17 +542,17 @@ func newHeaderlessResultPage(columnNames []*string, columnTypes []string, rowsDa
 	}
 }
 
-func newRandomHeaderResultPage(columns []*athena.ColumnInfo, nextToken *string,
+func newRandomHeaderResultPage(columns []types.ColumnInfo, nextToken *string,
 	rowLen int) *athena.GetQueryResultsOutput {
-	rows := make([]*athena.Row, rowLen)
+	rows := make([]types.Row, rowLen)
 	rows[0] = genHeaderRow(columns)
 	for i := 1; i < rowLen; i++ {
 		rows[i] = randRow(columns)
 	}
 	return &athena.GetQueryResultsOutput{
 		NextToken: nextToken,
-		ResultSet: &athena.ResultSet{
-			ResultSetMetadata: &athena.ResultSetMetadata{
+		ResultSet: &types.ResultSet{
+			ResultSetMetadata: &types.ResultSetMetadata{
 				ColumnInfo: columns,
 			},
 			Rows: rows,
@@ -572,16 +560,16 @@ func newRandomHeaderResultPage(columns []*athena.ColumnInfo, nextToken *string,
 	}
 }
 
-func newRandomHeaderlessResultPage(columns []*athena.ColumnInfo, nextToken *string,
+func newRandomHeaderlessResultPage(columns []types.ColumnInfo, nextToken *string,
 	rowLen int) *athena.GetQueryResultsOutput {
-	rows := make([]*athena.Row, rowLen)
+	rows := make([]types.Row, rowLen)
 	for i := 0; i < rowLen; i++ {
 		rows[i] = randRow(columns)
 	}
 	return &athena.GetQueryResultsOutput{
 		NextToken: nextToken,
-		ResultSet: &athena.ResultSet{
-			ResultSetMetadata: &athena.ResultSetMetadata{
+		ResultSet: &types.ResultSet{
+			ResultSetMetadata: &types.ResultSetMetadata{
 				ColumnInfo: columns,
 			},
 			Rows: rows,
@@ -677,7 +665,7 @@ func valueToNamedValue(args []driver.Value) []driver.NamedValue {
 	return nameValues
 }
 
-func isQueryTimeOut(startOfStartQueryExecution time.Time, queryType string, serviceLimitOverride *ServiceLimitOverride) bool {
+func isQueryTimeOut(startOfStartQueryExecution time.Time, queryType types.StatementType, serviceLimitOverride *ServiceLimitOverride) bool {
 	ddlQueryTimeout := DDLQueryTimeout
 	dmlQueryTimeout := DMLQueryTimeout
 	if serviceLimitOverride != nil {

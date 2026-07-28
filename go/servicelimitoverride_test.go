@@ -27,11 +27,13 @@ func TestNewServiceLimitOverride(t *testing.T) {
 	err = testConf.SetDMLQueryTimeout(dmlQueryTimeout)
 	assert.NotNil(t, err)
 
+	// A negative timeout disables the limit (see isQueryTimeOut), so it is a
+	// valid value and must not error.
 	ddlQueryTimeout = -1
 	dmlQueryTimeout = -1
 	err = testConf.SetDDLQueryTimeout(ddlQueryTimeout)
-	assert.NotNil(t, err)
+	assert.Nil(t, err)
 
 	err = testConf.SetDMLQueryTimeout(dmlQueryTimeout)
-	assert.NotNil(t, err)
+	assert.Nil(t, err)
 }

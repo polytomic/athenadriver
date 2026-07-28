@@ -219,7 +219,10 @@ func TestConfig_GetWorkgroup(t *testing.T) {
 	err := testConf.SetWorkGroup(wg)
 	assert.Nil(t, err)
 	w := testConf.GetWorkgroup()
-	assert.Nil(t, w.Tags)
+	// GetWorkgroup always returns an initialized (possibly empty) tag set; with
+	// no tags configured it is non-nil but empty.
+	assert.NotNil(t, w.Tags)
+	assert.Empty(t, w.Tags.Get())
 }
 
 func TestConfig_SetReadOnly(t *testing.T) {

@@ -35,11 +35,11 @@ func setUpFlagUsage(context.Context) error {
 			"\t\n" +
 			"AUTHOR\n\tHenry Fuheng Wu (wufuheng@gmail.com)\n\n" +
 			"REPORTING BUGS\n\thttps://github.com/uber/athenadriver\n"
-		fmt.Fprintf(commandLine.Output(), preBody)
+		fmt.Fprint(commandLine.Output(), preBody)
 		fmt.Fprintf(commandLine.Output(),
 			"SYNOPSIS\n\n\t%s [-v] [-b OUTPUT_BUCKET] [-d DATABASE_NAME] [-q QUERY_STRING_OR_FILE] [-r] [-a] [-m] [-y STYLE_NAME] [-o OUTPUT_FORMAT]\n\nDESCRIPTION\n\n", os.Args[0])
 		flag.PrintDefaults()
-		fmt.Fprintf(commandLine.Output(), desc)
+		fmt.Fprint(commandLine.Output(), desc)
 	}
 	return nil
 }
